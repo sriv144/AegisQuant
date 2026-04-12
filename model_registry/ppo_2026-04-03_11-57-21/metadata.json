@@ -1,0 +1,30 @@
+{
+    "model_id": "ppo_2026-04-03_11-57-21",
+    "algorithm": "PPO",
+    "hyperparameters": {
+        "lr": 0.0003,
+        "timesteps": 20000,
+        "seed": 45
+    },
+    "oos_metrics": {
+        "label": "val_w3",
+        "n_observations": 125,
+        "annualised_return": -0.5736,
+        "annualised_volatility": 0.1319,
+        "sharpe_ratio": -6.4494,
+        "sortino_ratio": -7.1518,
+        "calmar_ratio": -1.7303,
+        "max_drawdown": -0.3315,
+        "avg_drawdown_duration_days": 124.0,
+        "win_rate": 0.328,
+        "profit_factor": 0.2915,
+        "skewness": -1.3538,
+        "excess_kurtosis": 2.7033,
+        "t_stat": -4.5423,
+        "p_value": 0.0,
+        "deflated_sharpe_ratio": 0.0,
+        "annualised_turnover": 155.9951
+    },
+    "registered_at": "2026-04-03_11-57-21",
+    "status": "candidate"
+}
