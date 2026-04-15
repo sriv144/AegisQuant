@@ -100,20 +100,34 @@ Produce a JSON output matching this schema exactly:
 }}
 """
 
-        try:
-            response = self.llm.invoke([
-                {"role": "system", "content": self._create_system_prompt()},
-                {"role": "user", "content": prompt},
-            ])
-            decision = self._parse_llm_json(response.content)
-        except Exception as exc:
-            print(f"[{self.name}] LLM call failed: {exc}")
-            decision = {
-                "agent_name": self.name,
-                "action": "HOLD",
-                "confidence": 0.0,
-                "rationale": f"LLM unavailable: {exc}",
-            }
+        pct_from_high = data.get("pct_from_52w_high")
+        volume_ratio = data.get("volume_ratio_vs_3m_avg")
+        ytd_return = data.get("ytd_return_pct")
+        action = "HOLD"
+        confidence = 0.25
+        rationale = "Fallback fundamental signal remains neutral."
+        if isinstance(pct_from_high, (int, float)) and isinstance(volume_ratio, (int, float)):
+            if pct_from_high > -5 and volume_ratio >= 1.1:
+                action = "PROPOSE_LONG"
+                confidence = 0.62
+                rationale = "Price is holding near the 52-week high with supportive volume."
+            elif pct_from_high < -15 and volume_ratio >= 1.5:
+                action = "PROPOSE_LONG"
+                confidence = 0.58
+                rationale = "Deep pullback with elevated volume suggests capitulation."
+            elif isinstance(ytd_return, (int, float)) and ytd_return < -10 and volume_ratio < 1.0:
+                action = "PROPOSE_SHORT"
+                confidence = 0.57
+                rationale = "Weak YTD trend without volume confirmation points to continued weakness."
+
+        fallback = {
+            "agent_name": self.name,
+            "action": action,
+            "confidence": confidence,
+            "rationale": rationale,
+        }
+
+        decision = self._invoke_llm_json(prompt, fallback)
 
         return {"research_signals": [decision]}
 

@@ -83,20 +83,28 @@ Produce a JSON output matching this schema exactly:
 }}
 """
 
-        try:
-            response = self.llm.invoke([
-                {"role": "system", "content": self._create_system_prompt()},
-                {"role": "user", "content": prompt},
-            ])
-            decision = self._parse_llm_json(response.content)
-        except Exception as exc:
-            print(f"[{self.name}] LLM call failed: {exc}")
-            decision = {
-                "agent_name": self.name,
-                "action": "HOLD",
-                "confidence": 0.0,
-                "rationale": f"LLM unavailable: {exc}",
-            }
+        vix = macro_data.get("vix")
+        slope = macro_data.get("yield_curve_slope_bps")
+        action = "HOLD"
+        confidence = 0.25
+        rationale = "Fallback macro signal remains neutral."
+        if isinstance(vix, (int, float)) and vix >= 25:
+            action = "PROPOSE_SHORT"
+            confidence = 0.65
+            rationale = "Elevated VIX indicates a risk-off regime."
+        elif isinstance(slope, (int, float)) and slope < 0:
+            action = "PROPOSE_SHORT"
+            confidence = 0.58
+            rationale = "An inverted yield curve suggests macro stress."
+
+        fallback = {
+            "agent_name": self.name,
+            "action": action,
+            "confidence": confidence,
+            "rationale": rationale,
+        }
+
+        decision = self._invoke_llm_json(prompt, fallback)
 
         return {"research_signals": [decision]}
 

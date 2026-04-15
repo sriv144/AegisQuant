@@ -31,14 +31,20 @@ class AlpacaExecutor:
         
         self.api_key = os.getenv("ALPACA_API_KEY", "")
         self.secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+        self.execution_enabled = os.getenv("ENABLE_BROKER_EXECUTION", "False").lower() == "true"
         
-        self.mock_mode = not has_alpaca or not self.api_key
+        self.mock_mode = (
+            not self.execution_enabled
+            or not has_alpaca
+            or not self.api_key
+            or not self.secret_key
+        )
         
         if not self.mock_mode:
             self.client = TradingClient(self.api_key, self.secret_key, paper=self.paper)
             logger.info("Alpaca TradingClient successfully initialized.")
         else:
-            logger.warning("Alpaca credentials missing or SDK uninstalled. Running in Mock Executor mode.")
+            logger.warning("Broker execution disabled or credentials unavailable. Running in Mock Executor mode.")
 
     def execute_target_weights(self, target_weights: np.ndarray, theoretical_prices: Dict[str, float]) -> Dict[str, float]:
         """

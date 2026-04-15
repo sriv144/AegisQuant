@@ -46,7 +46,7 @@ class AlternativeDataCollector:
             for art in articles[:10]: # cap at 10 to limit LLM context bloat
                 # A simple mock explicit sentiment score generator based on keyword matching
                 # since full inference requires the actual LLM Agents defined in Phase 2
-                text = (art.get("title", "") + " " + art.get("description", "")).lower()
+                text = ((art.get("title") or "") + " " + (art.get("description") or "")).lower()
                 
                 score = 0.0
                 if any(w in text for w in ["soar", "jump", "record", "profit", "beat"]):

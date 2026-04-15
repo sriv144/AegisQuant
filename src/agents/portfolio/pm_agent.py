@@ -1,7 +1,10 @@
 import json
 import os
+import sys
 import numpy as np
 from typing import Dict, Any
+from pathlib import Path
+from gymnasium.spaces import Box
 from ..base_agent import BaseAgent
 from ..state import AgentState
 
@@ -12,6 +15,7 @@ except ImportError:
     RL_AVAILABLE = False
 
 MODEL_PATH = "ppo_portfolio_manager.zip"
+FALLBACK_MODEL_GLOB = "models/*.zip"
 
 class PMAgent(BaseAgent):
     def __init__(self):
@@ -20,13 +24,48 @@ class PMAgent(BaseAgent):
             role="Portfolio Manager. You receive approved signals from the Strategy Committee and output the initial sizing/allocation request before submitting it to Risk Management. You prioritize Risk-Adjusted Returns."
         )
         self.rl_model = None
-        if RL_AVAILABLE and os.path.exists(MODEL_PATH):
-            print(f"[{self.name}] Loading RL Optimization Model...")
+        if RL_AVAILABLE:
+            self.rl_model = self._load_rl_model()
+
+    def _load_rl_model(self):
+        from src.models.registry import ModelRegistry
+        registry = ModelRegistry()
+        prod_path = registry.get_production_model()
+
+        # Priority: registry production model > fixed path > glob
+        candidates = []
+        if prod_path:
+            candidates.append(Path(str(prod_path)))
+        candidates.extend([Path(MODEL_PATH), *sorted(Path().glob(FALLBACK_MODEL_GLOB))])
+        model_candidates = candidates
+
+        observation_space = Box(low=-1.0, high=1.0, shape=(6,), dtype=np.float32)
+        action_space = Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+
+        import numpy.core
+        import numpy.core.numeric
+
+        # Older checkpoints reference NumPy's legacy private module path during unpickling.
+        sys.modules.setdefault("numpy._core", numpy.core)
+        sys.modules.setdefault("numpy._core.numeric", numpy.core.numeric)
+
+        for model_path in model_candidates:
+            if not model_path.exists():
+                continue
+
+            print(f"[{self.name}] Loading RL Optimization Model from {model_path}...")
             try:
-                self.rl_model = PPO.load(MODEL_PATH)
+                return PPO.load(
+                    str(model_path),
+                    custom_objects={
+                        "observation_space": observation_space,
+                        "action_space": action_space,
+                    },
+                )
             except Exception as exc:
-                print(f"[{self.name}] Failed to load RL model '{MODEL_PATH}': {exc}")
-                self.rl_model = None
+                print(f"[{self.name}] Failed to load RL model '{model_path}': {exc}")
+
+        return None
 
     def _extract_rl_state(self, state: AgentState) -> np.ndarray:
         """

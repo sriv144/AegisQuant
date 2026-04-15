@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import Dict, Any
 
 from langchain_openai import ChatOpenAI
@@ -7,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from src import config  # noqa: F401
 
 class BaseAgent:
-    def __init__(self, name: str, role: str, model_name: str = "gpt-4-turbo-preview"):
+    def __init__(self, name: str, role: str, model_name: str | None = None):
         self.name = name
         self.role = role
         self.model_name = model_name
@@ -16,7 +17,26 @@ class BaseAgent:
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
             try:
-                self.llm = ChatOpenAI(model=model_name, temperature=0.2)
+                use_openrouter = api_key.startswith("sk-or-v1")
+                resolved_model = (
+                    model_name
+                    or os.getenv("LLM_MODEL", "").strip()
+                    or ("openai/gpt-4o-mini" if use_openrouter else "gpt-4o-mini")
+                )
+                client_kwargs = {
+                    "model": resolved_model,
+                    "temperature": 0.2,
+                    "api_key": api_key,
+                }
+
+                base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+                if base_url:
+                    client_kwargs["base_url"] = base_url
+                elif use_openrouter:
+                    client_kwargs["base_url"] = "https://openrouter.ai/api/v1"
+
+                self.model_name = resolved_model
+                self.llm = ChatOpenAI(**client_kwargs)
             except Exception as exc:
                 print(f"[{self.name}] Failed to initialize ChatOpenAI: {exc}")
         
@@ -40,11 +60,29 @@ class BaseAgent:
         """
         Utility to extract JSON from LLM output.
         """
+        candidates = []
+
+        fenced_json = re.findall(r"```json\s*(\{.*?\})\s*```", response, flags=re.DOTALL | re.IGNORECASE)
+        candidates.extend(fenced_json)
+
+        fenced_any = re.findall(r"```\s*(\{.*?\})\s*```", response, flags=re.DOTALL)
+        candidates.extend(fenced_any)
+
+        first_brace = response.find("{")
+        last_brace = response.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            candidates.append(response[first_brace:last_brace + 1])
+
         try:
-            # Strip markdown formatting if present
-            clean_str = response.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_str)
-        except json.JSONDecodeError:
+            for candidate in candidates or [response]:
+                clean_str = candidate.strip()
+                try:
+                    return json.loads(clean_str)
+                except json.JSONDecodeError:
+                    continue
+            print(f"[{self.name}] Error parsing JSON from LLM output: {response}")
+            return {"error": "Failed to parse decision."}
+        except Exception:
             print(f"[{self.name}] Error parsing JSON from LLM output: {response}")
             return {"error": "Failed to parse decision."}
 
@@ -57,7 +95,8 @@ class BaseAgent:
                 {"role": "system", "content": self._create_system_prompt(additional_instructions)},
                 {"role": "user", "content": prompt},
             ])
-            return self._parse_llm_json(response.content)
+            parsed = self._parse_llm_json(response.content)
+            return fallback if parsed.get("error") else parsed
         except Exception as exc:
             print(f"[{self.name}] LLM call failed: {exc}")
             return fallback

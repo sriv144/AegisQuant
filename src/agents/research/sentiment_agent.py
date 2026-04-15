@@ -30,20 +30,28 @@ class SentimentAgent(BaseAgent):
         }}
         """
         
-        try:
-            response = self.llm.invoke([
-                {"role": "system", "content": self._create_system_prompt()},
-                {"role": "user", "content": prompt},
-            ])
-            decision = self._parse_llm_json(response.content)
-        except Exception as exc:
-            print(f"[{self.name}] LLM call failed: {exc}")
-            decision = {
-                "agent_name": self.name,
-                "action": "HOLD",
-                "confidence": 0.0,
-                "rationale": f"LLM unavailable: {exc}",
-            }
+        sentiment = alt_data.get("sentiment")
+        action = "HOLD"
+        confidence = 0.25
+        rationale = "Fallback sentiment signal remains neutral."
+        if isinstance(sentiment, (int, float)):
+            if sentiment >= 0.2:
+                action = "PROPOSE_LONG"
+                confidence = min(0.75, 0.35 + abs(float(sentiment)))
+                rationale = "Positive aggregate sentiment supports a long bias."
+            elif sentiment <= -0.2:
+                action = "PROPOSE_SHORT"
+                confidence = min(0.75, 0.35 + abs(float(sentiment)))
+                rationale = "Negative aggregate sentiment supports a short bias."
+
+        fallback = {
+            "agent_name": self.name,
+            "action": action,
+            "confidence": round(confidence, 4),
+            "rationale": rationale,
+        }
+
+        decision = self._invoke_llm_json(prompt, fallback)
 
         return {"research_signals": [decision]}
 
