@@ -12,6 +12,7 @@ from .research.macro_agent import macro_agent
 from .research.sentiment_agent import sentiment_agent
 
 from .executive.strategy_committee_agent import strategy_committee_agent
+from .executive.strategy_selector_agent import strategy_selector_agent
 from .executive.cio_agent import cio_agent
 
 from .portfolio.pm_agent import pm_agent
@@ -25,6 +26,7 @@ class WorkflowOrchestrator:
         self.workflow = StateGraph(AgentState)
         
         self.workflow.add_node("research", self._research_node)
+        self.workflow.add_node("strategy_selector", self._strategy_selector_node)
         self.workflow.add_node("committee", self._committee_node)
         self.workflow.add_node("portfolio", self._portfolio_node)
         self.workflow.add_node("risk", self._risk_node)
@@ -32,7 +34,8 @@ class WorkflowOrchestrator:
 
         # Define graph edges
         self.workflow.set_entry_point("research")
-        self.workflow.add_edge("research", "committee")
+        self.workflow.add_edge("research", "strategy_selector")
+        self.workflow.add_edge("strategy_selector", "committee")
         self.workflow.add_conditional_edges(
             "committee",
             self._committee_router,
@@ -67,6 +70,10 @@ class WorkflowOrchestrator:
         
         signals = q_res['research_signals'] + f_res['research_signals'] + m_res['research_signals'] + s_res['research_signals']
         return {"research_signals": signals}
+
+    def _strategy_selector_node(self, state: AgentState) -> Dict[str, Any]:
+        print("[Workflow] Strategy Selection...")
+        return strategy_selector_agent.invoke(state)
 
     def _committee_node(self, state: AgentState) -> Dict[str, Any]:
         print("[Workflow] Committee Review...")

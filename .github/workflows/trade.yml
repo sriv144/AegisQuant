@@ -2,18 +2,18 @@ name: AegisQuant Daily Trade
 
 on:
   schedule:
-    # 9:35 AM Eastern = 13:35 UTC (EST) / 13:35 UTC (EDT offset applied via env below)
-    # During EDT (Mar–Nov): ET = UTC-4, so 9:35 AM ET = 13:35 UTC
-    # During EST (Nov–Mar): ET = UTC-5, so 9:35 AM ET = 14:35 UTC
-    # This cron runs at 13:35 UTC year-round — close enough, within the open market window.
-    - cron: '35 13 * * 1-5'
+    # US Pipeline (DISABLED for now — Option C)
+    # - cron: '35 13 * * 1-5'   # 9:35 AM ET = 13:35 UTC
+
+    # India Pipeline: 9:15 AM IST = 03:45 UTC (daily Mon-Fri)
+    - cron: '45 3 * * 1-5'
 
   # Allow manual trigger from GitHub Actions UI for testing
   workflow_dispatch:
 
 jobs:
-  trade:
-    name: Run RL Trading Cycle
+  india-trade:
+    name: India NSE Trading Cycle
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -30,10 +30,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run AegisQuant trading cycle
+      - name: Run AegisQuant India trading cycle
         env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ANGELONE_API_KEY: ${{ secrets.ANGELONE_API_KEY }}
+          ANGELONE_CLIENT_ID: ${{ secrets.ANGELONE_CLIENT_ID }}
+          ANGELONE_PASSWORD: ${{ secrets.ANGELONE_PASSWORD }}
+          ANGELONE_TOTP_KEY: ${{ secrets.ANGELONE_TOTP_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
@@ -42,13 +44,13 @@ jobs:
           ENABLE_MOCK_DATA: "False"
           MAX_DRAWDOWN_THRESHOLD: "0.15"
           MIN_SHARPE_THRESHOLD: "0.0"
-        run: python main.py --now
+        run: python main_india.py --now
 
       - name: Upload decision log (SQLite DB)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisquant-db-${{ github.run_number }}
+          name: aegisquant-india-db-${{ github.run_number }}
           path: aegisquant_live.db
           retention-days: 30
           if-no-files-found: ignore

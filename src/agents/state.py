@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, Sequence, Any, Dict
+from typing import TypedDict, Annotated, Sequence, Any, Dict, List
 import operator
 from pydantic import BaseModel, Field
 
@@ -9,19 +9,24 @@ class AgentState(TypedDict):
     # Current state of the pipeline
     current_asset: str
     timestamp: str
-    
+
     # Raw Data
     market_data: Dict[str, Any]
     alternative_data: Dict[str, Any]
     technical_indicators: Dict[str, Any]
-    
+
+    # Strategy selection (India multi-strategy layer)
+    active_strategies: List[str]
+    strategy_scores: Dict[str, float]
+    current_strategy: str
+
     # Decisions (annotated with generic list append for accumulation)
     research_signals: Annotated[Sequence[Dict[str, Any]], operator.add]
     committee_decision: Dict[str, Any]
     allocation_request: Dict[str, Any]
     risk_approval: Dict[str, Any]
     execution_result: Dict[str, Any]
-    
+
     # Global/Portfolio context
     portfolio_state: Dict[str, Any]
 
