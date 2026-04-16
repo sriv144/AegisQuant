@@ -51,23 +51,42 @@ class IndiaMarketDataCollector(MarketDataCollector):
         try:
             import yfinance as yf
             from datetime import datetime, timedelta
+            from threading import Thread
+            import queue as queue_module
 
-            # Fetch last 5 days to ensure we get data
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=5)
+            result_queue = queue_module.Queue()
 
-            data = yf.download(
-                "^INDIAVIX",
-                start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-                progress=False
-            )
+            def fetch_vix():
+                try:
+                    # Fetch last 5 days to ensure we get data
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=5)
 
-            if data.empty:
+                    data = yf.download(
+                        "^INDIAVIX",
+                        start=start_date.strftime("%Y-%m-%d"),
+                        end=end_date.strftime("%Y-%m-%d"),
+                        progress=False
+                    )
+                    result_queue.put(data)
+                except Exception as e:
+                    result_queue.put(None)
+
+            thread = Thread(target=fetch_vix, daemon=True)
+            thread.start()
+            thread.join(timeout=5)  # Wait max 5 seconds
+
+            try:
+                data = result_queue.get_nowait()
+            except queue_module.Empty:
+                logger.warning("[IndiaMarketData] ^INDIAVIX fetch timed out, defaulting to 20.0")
+                return 20.0
+
+            if data is None or data.empty:
                 logger.warning("[IndiaMarketData] ^INDIAVIX returned empty, defaulting to 20.0")
                 return 20.0
 
-            vix_value = float(data["Close"].iloc[-1])
+            vix_value = float(data["Close"].values[-1])
             logger.info(f"[IndiaMarketData] India VIX: {vix_value:.2f}")
             return vix_value
 

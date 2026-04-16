@@ -13,17 +13,54 @@ def _fetch_macro_snapshot() -> Dict[str, Any]:
       ^FVX   — 5-year Treasury yield (slope proxy: ^TNX - ^FVX ≈ term spread)
       DX-Y.NYB — US Dollar Index
     Returns the most-recent closing values.
+    Includes timeout protection to prevent hanging on slow/unavailable feeds.
     """
     try:
         import yfinance as yf
         import pandas as pd
+        from threading import Thread
+        import queue as queue_module
 
-        tickers = {"^VIX": "vix", "^TNX": "10y_treasury_yield", "^FVX": "5y_treasury_yield", "DX-Y.NYB": "usd_index"}
-        raw = yf.download(list(tickers.keys()), period="5d", auto_adjust=True, progress=False)
+        result_queue = queue_module.Queue()
+
+        def fetch_data():
+            try:
+                tickers = {"^VIX": "vix", "^TNX": "10y_treasury_yield", "^FVX": "5y_treasury_yield", "DX-Y.NYB": "usd_index"}
+                raw = yf.download(list(tickers.keys()), period="5d", auto_adjust=True, progress=False)
+                result_queue.put(raw)
+            except Exception as e:
+                result_queue.put(None)
+
+        thread = Thread(target=fetch_data, daemon=True)
+        thread.start()
+        thread.join(timeout=5)  # 5 second timeout
+
+        try:
+            raw = result_queue.get_nowait()
+        except queue_module.Empty:
+            return {
+                "vix": None,
+                "10y_treasury_yield": None,
+                "5y_treasury_yield": None,
+                "usd_index": None,
+                "yield_curve_slope_bps": None,
+                "fetch_error": "yfinance timeout",
+            }
+
+        if raw is None:
+            return {
+                "vix": None,
+                "10y_treasury_yield": None,
+                "5y_treasury_yield": None,
+                "usd_index": None,
+                "yield_curve_slope_bps": None,
+                "fetch_error": "yfinance returned None",
+            }
 
         close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw
         latest = close.ffill().iloc[-1]
 
+        tickers = {"^VIX": "vix", "^TNX": "10y_treasury_yield", "^FVX": "5y_treasury_yield", "DX-Y.NYB": "usd_index"}
         snapshot: Dict[str, Any] = {}
         for yf_ticker, label in tickers.items():
             val = latest.get(yf_ticker)
