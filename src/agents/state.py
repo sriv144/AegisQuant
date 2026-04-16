@@ -20,6 +20,13 @@ class AgentState(TypedDict):
     strategy_scores: Dict[str, float]
     current_strategy: str
 
+    # Trade type and position management (delivery vs intraday)
+    trade_type: str                        # "MIS", "CNC", or "SKIP"
+    stop_loss_pct: float                   # per-position SL threshold (e.g., 0.08)
+    take_profit_pct: float                 # per-position TP threshold (e.g., 0.20)
+    intraday_budget: float                 # available intraday capital for this cycle
+    delivery_budget: float                 # available delivery capital for this cycle
+
     # Decisions (annotated with generic list append for accumulation)
     research_signals: Annotated[Sequence[Dict[str, Any]], operator.add]
     committee_decision: Dict[str, Any]

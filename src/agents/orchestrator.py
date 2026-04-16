@@ -13,6 +13,7 @@ from .research.sentiment_agent import sentiment_agent
 
 from .executive.strategy_committee_agent import strategy_committee_agent
 from .executive.strategy_selector_agent import strategy_selector_agent
+from .executive.universe_selector_agent import universe_selector_agent
 from .executive.cio_agent import cio_agent
 
 from .portfolio.pm_agent import pm_agent
