@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="app-container">
@@ -43,7 +43,7 @@
                     <div class="value" id="val-portfolio">₹0.00</div>
                     <div class="subtext" id="val-pnl">Fetching...</div>
                 </div>
-                
+
                 <div class="metric-card">
                     <h3>Max Drawdown</h3>
                     <div class="value text-danger" id="val-drawdown">0.00%</div>
@@ -51,9 +51,15 @@
                 </div>
 
                 <div class="metric-card">
-                    <h3>Open Positions</h3>
+                    <h3>Active Positions</h3>
                     <div class="value" id="val-positions">0</div>
-                    <div class="subtext">Active Trades</div>
+                    <div class="subtext" id="val-exposure">Gross exposure: —</div>
+                </div>
+
+                <div class="metric-card">
+                    <h3>Last Run</h3>
+                    <div class="value" style="font-size:1rem" id="val-last-run">—</div>
+                    <div class="subtext" id="val-model">Model: —</div>
                 </div>
 
                 <!-- Main Chart spanning full width -->
@@ -70,21 +76,21 @@
                     <canvas id="pnlChart"></canvas>
                 </div>
 
-                <!-- Positions List -->
-                <div class="data-table-container">
-                    <h2>Current Holdings</h2>
+                <!-- Latest Run Positions -->
+                <div class="data-table-container span-full">
+                    <h2>Latest Run — Agent Positions <span id="run-timestamp" style="font-size:0.8rem;font-weight:400;opacity:0.6"></span></h2>
+                    <div id="run-summary" style="display:flex;gap:2rem;margin-bottom:1rem;font-size:0.85rem;opacity:0.8"></div>
                     <table class="modern-table">
                         <thead>
                             <tr>
                                 <th>Symbol</th>
-                                <th>Qty</th>
-                                <th>Avg. Price</th>
-                                <th>Type</th>
-                                <th>Day P&L(%)</th>
+                                <th>Direction</th>
+                                <th>Weight</th>
+                                <th>Capital Allocated</th>
                             </tr>
                         </thead>
-                        <tbody id="positions-body">
-                            <!-- Dynamic Rows -->
+                        <tbody id="latest-run-body">
+                            <tr><td colspan="4" style="text-align:center;opacity:0.5">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -102,7 +108,24 @@
                             </tr>
                         </thead>
                         <tbody id="decisions-body">
-                            <!-- Dynamic Rows -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Open Positions (CNC) -->
+                <div class="data-table-container">
+                    <h2>Open Positions (CNC)</h2>
+                    <table class="modern-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Qty</th>
+                                <th>Entry Price</th>
+                                <th>Type</th>
+                                <th>P&L %</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-body">
                         </tbody>
                     </table>
                 </div>
@@ -111,6 +134,6 @@
     </div>
 
     <!-- Application Logic -->
-    <script src="app.js"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>

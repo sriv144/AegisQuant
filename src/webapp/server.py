@@ -81,22 +81,87 @@ def get_decisions():
         query = text("SELECT timestamp, model_version, final_weights, transaction_costs, circuit_breaker_status FROM decisions ORDER BY id DESC LIMIT 50")
         with engine.connect() as conn:
             df = pd.read_sql(query, conn)
-            
+
         if df.empty:
             return []
-            
-        # Parse weights safely
+
         def safe_json_load(x):
             try:
                 return json.loads(x)
             except:
                 return []
-                
+
         df['final_weights'] = df['final_weights'].apply(safe_json_load)
         return df.to_dict(orient="records")
     except Exception as e:
         print(e)
         return []
+
+
+@app.get("/api/latest-run")
+def get_latest_run():
+    """
+    Returns the ticker-level breakdown from the most recent decision:
+    which tickers were longed, shorted, or skipped, and at what weight.
+    """
+    try:
+        engine = get_engine()
+        query = text("""
+            SELECT timestamp, ticker_universe, rl_output, final_weights,
+                   circuit_breaker_status, model_version
+            FROM decisions
+            ORDER BY id DESC
+            LIMIT 1
+        """)
+        with engine.connect() as conn:
+            row = conn.execute(query).fetchone()
+
+        if not row:
+            return {"positions": [], "summary": {}}
+
+        timestamp, tickers_raw, rl_raw, weights_raw, cb_status, model = row
+        tickers = json.loads(tickers_raw or "[]")
+        weights = json.loads(weights_raw or "[]")
+
+        PORTFOLIO_VALUE = 250_000.0
+        positions = []
+        for ticker, w in zip(tickers, weights):
+            if abs(w) < 0.001:
+                continue
+            direction = "LONG" if w > 0 else "SHORT"
+            rupees = abs(w) * PORTFOLIO_VALUE
+            positions.append({
+                "ticker": ticker,
+                "weight_pct": round(w * 100, 2),
+                "direction": direction,
+                "rupees": round(rupees, 0),
+            })
+
+        positions.sort(key=lambda x: -abs(x["weight_pct"]))
+
+        longs = [p for p in positions if p["direction"] == "LONG"]
+        shorts = [p for p in positions if p["direction"] == "SHORT"]
+        gross = sum(abs(w) for w in weights)
+        net = sum(weights)
+
+        return {
+            "timestamp": timestamp,
+            "model_version": model,
+            "circuit_breaker": cb_status,
+            "universe_size": len(tickers),
+            "positions": positions,
+            "summary": {
+                "long_count": len(longs),
+                "short_count": len(shorts),
+                "gross_exposure_pct": round(gross * 100, 1),
+                "net_exposure_pct": round(net * 100, 1),
+                "cash_pct": round((1 - gross) * 100, 1),
+                "portfolio_value": PORTFOLIO_VALUE,
+            },
+        }
+    except Exception as e:
+        print(e)
+        return {"error": str(e), "positions": [], "summary": {}}
 
 if __name__ == "__main__":
     import uvicorn

@@ -18,41 +18,51 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function fetchDashboardData() {
     try {
-        const [portfolioRes, positionsRes, decisionsRes] = await Promise.all([
+        const [portfolioRes, positionsRes, decisionsRes, latestRunRes] = await Promise.all([
             fetch('/api/portfolio'),
             fetch('/api/positions'),
-            fetch('/api/decisions')
+            fetch('/api/decisions'),
+            fetch('/api/latest-run')
         ]);
 
         const portfolioData = await portfolioRes.json();
         const positionsData = await positionsRes.json();
         const decisionsData = await decisionsRes.json();
+        const latestRunData = await latestRunRes.json();
 
-        updateMetrics(portfolioData, positionsData);
+        updateMetrics(portfolioData, positionsData, latestRunData);
         renderChart(portfolioData.history);
         renderPositions(positionsData);
         renderDecisions(decisionsData);
+        renderLatestRun(latestRunData);
 
     } catch (e) {
         console.error("Failed to fetch dashboard data", e);
     }
 }
 
-function updateMetrics(portfolio, positions) {
-    document.getElementById('val-portfolio').textContent = formatCurrency(portfolio.current_value || 0);
-    
-    // PnL subtext
+function updateMetrics(portfolio, _positions, latestRun) {
+    document.getElementById('val-portfolio').textContent = formatCurrency(portfolio.current_value || 250000);
+
     const pnlEl = document.getElementById('val-pnl');
     const pnl = portfolio.total_pnl || 0;
     pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)} (Total P&L)`;
     pnlEl.className = pnl >= 0 ? 'subtext text-success' : 'subtext text-danger';
 
-    // Drawdown
     const dd = (portfolio.drawdown || 0) * 100;
     document.getElementById('val-drawdown').textContent = `${dd.toFixed(2)}%`;
-    
-    // Positions Count
-    document.getElementById('val-positions').textContent = positions.length || 0;
+
+    const summary = latestRun && latestRun.summary ? latestRun.summary : {};
+    const posCount = (summary.long_count || 0) + (summary.short_count || 0);
+    document.getElementById('val-positions').textContent = posCount;
+    document.getElementById('val-exposure').textContent =
+        `Gross: ${summary.gross_exposure_pct || 0}%  |  Net: ${summary.net_exposure_pct || 0}%`;
+
+    if (latestRun && latestRun.timestamp) {
+        const ts = new Date(latestRun.timestamp);
+        document.getElementById('val-last-run').textContent = ts.toLocaleString('en-IN', {timeZone:'Asia/Kolkata'});
+        document.getElementById('val-model').textContent = `Model: ${latestRun.model_version || '—'}`;
+    }
 }
 
 function renderChart(history) {
@@ -161,6 +171,47 @@ function renderPositions(positions) {
             <td>${formatCurrency(pos.entry_price)}</td>
             <td><span class="badge ${typeClass}">${pos.trade_type || 'CNC'}</span></td>
             <td class="${pnlClass}">${(pos.pnl_pct * 100).toFixed(2)}%</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function renderLatestRun(data) {
+    const tbody = document.getElementById('latest-run-body');
+    const tsEl = document.getElementById('run-timestamp');
+    const summaryEl = document.getElementById('run-summary');
+    if (!data || !data.positions) return;
+
+    if (data.timestamp) {
+        tsEl.textContent = '— ' + new Date(data.timestamp).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'});
+    }
+
+    const s = data.summary || {};
+    summaryEl.innerHTML = `
+        <span>Universe: <b>${data.universe_size || 0}</b></span>
+        <span style="color:#00d09c">Longs: <b>${s.long_count || 0}</b></span>
+        <span style="color:#f04b4b">Shorts: <b>${s.short_count || 0}</b></span>
+        <span>Gross: <b>${s.gross_exposure_pct || 0}%</b></span>
+        <span>Net: <b>${s.net_exposure_pct || 0}%</b></span>
+        <span>CB: <b>${data.circuit_breaker || '—'}</b></span>
+    `;
+
+    tbody.innerHTML = '';
+    if (!data.positions.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;opacity:0.5">No positions in last run.</td></tr>`;
+        return;
+    }
+
+    data.positions.forEach(pos => {
+        const tr = document.createElement('tr');
+        const isLong = pos.direction === 'LONG';
+        const dirClass = isLong ? 'badge-long' : 'badge-short';
+        const weightColor = isLong ? 'var(--accent-primary)' : '#f04b4b';
+        tr.innerHTML = `
+            <td style="font-weight:600">${pos.ticker.replace('.NS', '')}</td>
+            <td><span class="badge ${dirClass}">${pos.direction}</span></td>
+            <td style="color:${weightColor}">${pos.weight_pct > 0 ? '+' : ''}${pos.weight_pct.toFixed(2)}%</td>
+            <td>₹${pos.rupees.toLocaleString('en-IN')}</td>
         `;
         tbody.appendChild(tr);
     });
