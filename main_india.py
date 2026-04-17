@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src import config  # noqa: F401  # Ensures .env is loaded
-from src.execution.angelone_executor import AngelOneExecutor
+from src.execution.groww_executor import GrowwExecutor
 from src.data.india_market_data import india_market_data
 from src.data.feature_engineering import feature_engineer
 from src.data.alternative_data import alt_data as alt_data_collector
@@ -38,7 +38,7 @@ def _fetch_india_vix() -> float:
     return india_market_data.get_india_vix()
 
 
-def _get_live_portfolio_state(executor: AngelOneExecutor, tickers: list) -> dict:
+def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list) -> dict:
     """
     Returns a portfolio state dict compatible with AgentState['portfolio_state'].
     In mock mode: defaults. In live mode: queries Angel One for real positions.
@@ -50,7 +50,7 @@ def _get_live_portfolio_state(executor: AngelOneExecutor, tickers: list) -> dict
 
     if not executor.mock_mode:
         try:
-            # In real mode, would query executor.client for positions
+            # In real mode, would query executor.api for positions
             # For now, mock behavior
             portfolio_value = 250000.0  # ₹2.5 lakh
             if _peak_equity[0] is None or portfolio_value > _peak_equity[0]:
@@ -58,9 +58,9 @@ def _get_live_portfolio_state(executor: AngelOneExecutor, tickers: list) -> dict
             if _peak_equity[0] and _peak_equity[0] > 0:
                 drawdown = max(0.0, (_peak_equity[0] - portfolio_value) / _peak_equity[0])
         except Exception as e:
-            print(f"[LiveState] Angel One portfolio fetch failed ({e}), using safe defaults.")
+            print(f"[LiveState] Groww portfolio fetch failed ({e}), using safe defaults.")
     else:
-        print(f"[LiveState] Mock mode — skipping Angel One account query.")
+        print(f"[LiveState] Mock mode — skipping Groww account query.")
 
     print(f"[LiveState] drawdown={drawdown:.4f}  india_vix={vix:.2f}  portfolio_value={portfolio_value:.0f}")
 
@@ -114,8 +114,8 @@ def main_india_live_loop():
     UNIVERSE = universe_screener.screen_universe()
     print(f"[Pipeline] Selected {len(UNIVERSE)} tickers from dynamic screening")
 
-    # 2. Angel One Executor
-    executor = AngelOneExecutor(tickers=UNIVERSE, paper=True)
+    # 2. Groww Executor
+    executor = GrowwExecutor(tickers=UNIVERSE, paper=True)
 
     # 3. Position manager: close any SL/TP/aged positions FIRST
     print("[Pipeline] Checking position exits (SL/TP/aging)...")

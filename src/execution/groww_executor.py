@@ -1,13 +1,13 @@
 """
-Angel One SmartAPI Executor
+Groww API Executor
 ===========================
 Takes continuous [-1, 1] weighting arrays and translates them into market orders
-against Angel One's SmartAPI (Indian broker).
+against Groww API (Indian broker).
 Mirrors AlpacaExecutor interface for compatibility.
 
 Supports:
 - Paper trading (mock mode, no credentials needed)
-- Live trading via SmartAPI with TOTP authentication
+- Live trading via unofficial growwapi
 - MIS (intraday) and CNC (delivery) product types
 """
 
@@ -20,107 +20,119 @@ from typing import List, Dict, Optional
 from src import config  # noqa: F401
 
 try:
-    from smartapi import SmartConnect
-    has_angelone = True
+    from growwapi import GrowwAPI
+    has_groww = True
 except ImportError:
-    has_angelone = False
+    has_groww = False
 
 logger = logging.getLogger(__name__)
 
-# Angel One SmartAPI token symbol lookup is needed for placeOrder
-# Format: exchange_token -> trading_symbol mapping (simplified)
+# Groww Exchange mapping
 NSE_EXCHANGE = "NSE"
 BSE_EXCHANGE = "BSE"
 
 
-class AngelOneExecutor:
+class GrowwExecutor:
     def __init__(self, tickers: List[str], paper: bool = True):
         self.tickers = tickers
         self.paper = paper
 
-        self.api_key    = os.getenv("ANGELONE_API_KEY", "")
-        self.client_id  = os.getenv("ANGELONE_CLIENT_ID", "")
-        self.password   = os.getenv("ANGELONE_PASSWORD", "")
-        self.totp_key   = os.getenv("ANGELONE_TOTP_KEY", "")  # Base32 secret from Angel One TOTP setup
+        self.api_key    = os.getenv("GROWW_API_KEY", "")
+        self.secret_key = os.getenv("GROWW_SECRET_KEY", "")
 
         enable_execution = os.getenv("ENABLE_BROKER_EXECUTION", "False").lower() == "true"
 
         self.mock_mode = (
-            not has_angelone
+            not has_groww
             or not self.api_key
-            or not self.client_id
-            or not self.password
             or not enable_execution
         )
 
-        self.client = None
-        self.session_token = None
+        self.api = None
 
         if not self.mock_mode:
             self._login()
         else:
-            if not has_angelone:
-                logger.warning("[AngelOne] smartapi-python not installed. Run: pip install smartapi-python pyotp")
+            if not has_groww:
+                logger.warning("[Groww] growwapi not installed. Run: pip install growwapi")
             elif not enable_execution:
-                logger.info("[AngelOne] ENABLE_BROKER_EXECUTION=False — running in paper mode (no real orders).")
+                logger.info("[Groww] ENABLE_BROKER_EXECUTION=False — running in paper mode (no real orders).")
             else:
-                logger.warning("[AngelOne] Credentials incomplete. Running in Mock Executor mode.")
+                logger.warning("[Groww] Credentials incomplete. Running in Mock Executor mode.")
 
     def _login(self):
-        """Authenticate with Angel One SmartAPI using TOTP."""
+        """Authenticate with Groww."""
         try:
-            import pyotp
-
-            totp = pyotp.TOTP(self.totp_key).now() if self.totp_key else ""
-
-            self.client = SmartConnect(api_key=self.api_key)
-            data = self.client.generateSession(self.client_id, self.password, totp)
-
-            if data and data.get("status"):
-                self.session_token = data["data"]["jwtToken"]
-                logger.info(f"[AngelOne] Logged in successfully as {self.client_id}")
-                print(f"[AngelOne] Live session established for {self.client_id}")
+            # The get_access_token method returns a string OR potentially a dict depending on internal logic.
+            # We handle both just in case.
+            token_data = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.secret_key)
+            if isinstance(token_data, str):
+                access_token = token_data
+            elif isinstance(token_data, dict):
+                access_token = token_data.get("access_token", self.api_key)
             else:
-                logger.error(f"[AngelOne] Login failed: {data}")
+                access_token = self.api_key
+                
+            self.api = GrowwAPI(token=access_token)
+            profile = self.api.get_user_profile()
+            
+            if profile and profile.get("vendor_user_id"):
+                logger.info(f"[Groww] Logged in successfully for user ID {profile.get('vendor_user_id')}")
+                print(f"[Groww] Live session established for user ID {profile.get('vendor_user_id')}")
+            else:
+                logger.error(f"[Groww] Login failed or profile empty: {profile}")
                 self.mock_mode = True
 
         except Exception as e:
-            logger.error(f"[AngelOne] Login error: {e}")
-            print(f"[AngelOne] Login failed ({e}). Falling back to mock mode.")
+            logger.error(f"[Groww] Login error: {e}")
+            print(f"[Groww] Login failed ({e}). Falling back to mock mode.")
             self.mock_mode = True
 
     def get_ltp(self, ticker: str) -> float:
-        """Fetch Last Traded Price from Angel One."""
-        if self.mock_mode or not self.client:
+        """Fetch Last Traded Price from Groww."""
+        if self.mock_mode or not self.api:
             return 0.0
         try:
             symbol = ticker.replace(".NS", "").replace(".BO", "")
-            ltp_data = self.client.ltpData("NSE", symbol, "")
-            if ltp_data and ltp_data.get("data"):
-                return float(ltp_data["data"]["ltp"])
+            exchange = "NSE" if ticker.endswith(".NS") else "BSE"
+            payload_symbol = f"{exchange}_{symbol}"
+            
+            ltp_data = self.api.get_ltp(exchange_trading_symbols=payload_symbol, segment="CASH")
+            if ltp_data and payload_symbol in ltp_data:
+                return float(ltp_data[payload_symbol])
         except Exception as e:
-            logger.error(f"[AngelOne] LTP fetch failed for {ticker}: {e}")
+            logger.error(f"[Groww] LTP fetch failed for {ticker}: {e}")
         return 0.0
 
     def get_portfolio_value(self) -> float:
         """Fetch live portfolio value (holdings + cash)."""
-        if self.mock_mode or not self.client:
+        if self.mock_mode or not self.api:
             return 250000.0
         try:
-            holdings = self.client.holding()
-            if holdings and holdings.get("data"):
-                total = sum(
-                    float(h.get("ltp", 0)) * int(h.get("quantity", 0))
-                    for h in holdings["data"]
-                )
-                return total
+            # In Groww, available funds can be checked via get_available_margin_details
+            # Total value = available cash + active holdings
+            funds = self.api.get_available_margin_details()
+            cash = funds.get("clear_cash", 0.0) + funds.get("collateral_available", 0.0)
+            
+            # Fetch holdings
+            holdings_response = self.api.get_holdings_for_user()
+            holdings = holdings_response.get("holdings", [])
+            holdings_value = 0.0
+            
+            for h in holdings:
+                # Based on typical Groww API response schema
+                ltp = float(h.get("ltp", 0.0))
+                qty = int(h.get("quantity", 0))
+                holdings_value += ltp * qty
+                
+            return cash + holdings_value
         except Exception as e:
-            logger.error(f"[AngelOne] Holdings fetch failed: {e}")
+            logger.error(f"[Groww] Holdings/Funds fetch failed: {e}")
         return 250000.0
 
     def _place_order(self, ticker: str, qty: int, transaction_type: str, product_type: str = "CNC") -> Optional[str]:
         """
-        Place a single order via SmartAPI.
+        Place a single order via Groww API.
 
         Args:
             ticker:           e.g. "RELIANCE.NS"
@@ -131,40 +143,40 @@ class AngelOneExecutor:
         Returns:
             Order ID string, or None on failure
         """
-        if self.mock_mode or not self.client:
-            print(f"[AngelOne Mock] {transaction_type} {qty}x {ticker} ({product_type})")
+        if self.mock_mode or not self.api:
+            print(f"[Groww Mock] {transaction_type} {qty}x {ticker} ({product_type})")
             return f"MOCK_{ticker}_{int(time.time())}"
 
         try:
             symbol = ticker.replace(".NS", "").replace(".BO", "")
             exchange = "NSE" if ticker.endswith(".NS") else "BSE"
 
-            order_params = {
-                "variety":          "NORMAL",
-                "tradingsymbol":    symbol,
-                "symboltoken":      "",       # Requires token lookup from Angel One scrip master
-                "transactiontype":  transaction_type,  # "BUY" or "SELL"
-                "exchange":         exchange,
-                "ordertype":        "MARKET",
-                "producttype":      product_type,  # "CNC" or "MIS"
-                "duration":         "DAY",
-                "price":            "0",
-                "squareoff":        "0",
-                "stoploss":         "0",
-                "quantity":         str(qty),
-            }
-
-            response = self.client.placeOrder(order_params)
-            if response and response.get("status"):
-                order_id = response["data"]["orderid"]
-                logger.info(f"[AngelOne] Order placed: {transaction_type} {qty}x {symbol} ({product_type}) → ID {order_id}")
-                return order_id
+            response = self.api.place_order(
+                validity="DAY",
+                exchange=exchange,
+                order_type="MARKET",
+                product=product_type,
+                quantity=qty,
+                segment="CASH",
+                trading_symbol=symbol,
+                transaction_type=transaction_type
+            )
+            
+            if response and "order_id" in response:
+                order_id = response.get("order_id")
+                logger.info(f"[Groww] Order placed: {transaction_type} {qty}x {symbol} ({product_type}) → ID {order_id}")
+                return str(order_id)
+            elif response and "id" in response:
+                # Alternative reference from response
+                order_id = response.get("id")
+                logger.info(f"[Groww] Order placed: {transaction_type} {qty}x {symbol} ({product_type}) → ID {order_id}")
+                return str(order_id)
             else:
-                logger.error(f"[AngelOne] Order failed: {response}")
+                logger.error(f"[Groww] Order failed: {response}")
                 return None
 
         except Exception as e:
-            logger.error(f"[AngelOne] Order error for {ticker}: {e}")
+            logger.error(f"[Groww] Order error for {ticker}: {e}")
             return None
 
     def execute_target_weights(
@@ -188,7 +200,7 @@ class AngelOneExecutor:
         fills = {}
 
         if self.mock_mode:
-            print(f"[AngelOne Mock] Executing target weights: {target_weights.round(2)}")
+            print(f"[Groww Mock] Executing target weights: {target_weights.round(2)}")
             return theoretical_prices.copy()
 
         # Get portfolio value for qty calculation
