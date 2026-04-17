@@ -191,7 +191,8 @@ def main_india_live_loop():
         final_state = orchestrator.run_cycle(initial_state)
 
         allocation = final_state.get("allocation_request", {})
-        exposure = float(allocation.get("target_exposure_pct", 0.0))
+        # asset_allocation_agent writes adjusted_exposure_pct; PM writes target_exposure_pct
+        exposure = float(allocation.get("adjusted_exposure_pct") or allocation.get("target_exposure_pct") or 0.0)
         # Use committee direction (set by LLM) — rl_direction from PM can be unreliable
         # if the RL model is degenerate (always outputs the same sign).
         committee_dir = final_state.get("committee_decision", {}).get("direction", "LONG")
