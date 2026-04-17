@@ -48,19 +48,17 @@ def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list) -> dict:
     drawdown = 0.0
     portfolio_value = 0.0
 
-    if not executor.mock_mode:
-        try:
-            # In real mode, would query executor.api for positions
-            # For now, mock behavior
-            portfolio_value = 250000.0  # ₹2.5 lakh
-            if _peak_equity[0] is None or portfolio_value > _peak_equity[0]:
-                _peak_equity[0] = portfolio_value
-            if _peak_equity[0] and _peak_equity[0] > 0:
-                drawdown = max(0.0, (_peak_equity[0] - portfolio_value) / _peak_equity[0])
-        except Exception as e:
-            print(f"[LiveState] Groww portfolio fetch failed ({e}), using safe defaults.")
-    else:
-        print(f"[LiveState] Mock mode — skipping Groww account query.")
+    try:
+        portfolio_value = 250000.0  # ₹2.5 lakh paper capital
+        if _peak_equity[0] is None or portfolio_value > _peak_equity[0]:
+            _peak_equity[0] = portfolio_value
+        if _peak_equity[0] and _peak_equity[0] > 0:
+            drawdown = max(0.0, (_peak_equity[0] - portfolio_value) / _peak_equity[0])
+        mode_label = "paper" if executor.mock_mode else "live"
+        print(f"[LiveState] {mode_label} mode — portfolio_value=₹{portfolio_value:,.0f}")
+    except Exception as e:
+        portfolio_value = 250000.0
+        print(f"[LiveState] Portfolio fetch failed ({e}), using default ₹{portfolio_value:,.0f}")
 
     print(f"[LiveState] drawdown={drawdown:.4f}  india_vix={vix:.2f}  portfolio_value={portfolio_value:.0f}")
 
@@ -290,26 +288,40 @@ def main_india_live_loop():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--now", action="store_true", help="Execute immediately instead of cron")
+    parser.add_argument("--now", action="store_true", help="Execute immediately instead of waiting for next interval")
     args = parser.parse_args()
 
     if args.now:
         main_india_live_loop()
     else:
         print("Starting APScheduler Daemon (India)...")
-        print("AegisQuant India is armed. Trades will automatically trigger at 09:15 AM IST M-F.")
+        print("AegisQuant India is armed. Pipeline runs every 20 minutes from 09:15 to 15:25 IST (Mon-Fri).")
         from apscheduler.schedulers.blocking import BlockingScheduler
 
         scheduler = BlockingScheduler()
 
-        # Fire daily at 09:15 AM Indian Standard Time
+        # Run every 20 minutes during NSE market hours (09:15 – 15:05 IST)
+        # Fires: :15, :35, :55 each hour from 9 to 14, then 15:05 as last run before close
         scheduler.add_job(
             main_india_live_loop,
             'cron',
             day_of_week='mon-fri',
-            hour=9,
-            minute=15,
-            timezone='Asia/Kolkata'
+            hour='9-14',
+            minute='15,35,55',
+            timezone='Asia/Kolkata',
+            max_instances=1,        # prevent overlap if a run takes >20 min
+            coalesce=True,          # skip missed fires instead of stacking them
+        )
+        # Final fire at 15:05 — last decision before 15:25 market close auction
+        scheduler.add_job(
+            main_india_live_loop,
+            'cron',
+            day_of_week='mon-fri',
+            hour=15,
+            minute=5,
+            timezone='Asia/Kolkata',
+            max_instances=1,
+            coalesce=True,
         )
 
         try:

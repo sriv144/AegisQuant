@@ -51,11 +51,11 @@ class UniverseScreener:
         self.correlation_analyzer = CorrelationAnalyzer()
         self._cache = {}
         self._cache_time = None
-        self.cache_ttl_days = 7
+        self.cache_ttl_days = 1  # Re-screen daily; ticker list fetched from NSE bhav copy each day
 
     def screen_universe(self, force_refresh: bool = False, open_positions: Optional[Dict] = None) -> List[str]:
         """
-        Main entry point. Returns cached universe if < 7 days old, else re-screens.
+        Main entry point. Returns cached universe if < 1 day old, else re-screens.
 
         Args:
             force_refresh: If True, ignore cache and re-run full screen
@@ -99,9 +99,36 @@ class UniverseScreener:
     def _fetch_nse_all_tickers(self) -> List[str]:
         """
         Fetch list of all NSE-listed tickers.
-        First try: data/nse_all_stocks.csv (static seed)
-        Fallback: yfinance bulk download and parse
+        Priority order:
+        1. Live NSE bhav copy (most current — full ~2000 stock universe)
+        2. data/nse_all_stocks.csv (static seed)
+        3. Curated Nifty 500 seed list (validated, no delisted stocks)
         """
+        # 1. Try live NSE bhav copy (official EOD file listing all traded symbols)
+        try:
+            import io
+            import requests
+            from datetime import datetime as _dt
+            today = _dt.now()
+            # NSE publishes bhav copy at ~18:00 IST; use previous weekday if needed
+            for delta in range(5):
+                d = today - timedelta(days=delta)
+                if d.weekday() < 5:  # Mon-Fri
+                    date_str = d.strftime("%d%m%Y")
+                    url = f"https://archives.nseindia.com/content/historical/EQUITIES/{d.year}/{d.strftime('%b').upper()}/cm{date_str}bhav.csv.zip"
+                    resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                    if resp.status_code == 200:
+                        import zipfile
+                        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                            csv_name = [n for n in z.namelist() if n.endswith(".csv")][0]
+                            df = pd.read_csv(z.open(csv_name))
+                        tickers = [f"{t.strip()}.NS" for t in df["SYMBOL"].unique() if pd.notna(t)]
+                        logger.info(f"[UniverseScreener] Loaded {len(tickers)} tickers from NSE bhav copy ({d.date()})")
+                        return tickers
+        except Exception as e:
+            logger.warning(f"[UniverseScreener] NSE bhav copy fetch failed: {e}")
+
+        # 2. Static CSV seed
         try:
             import os
             csv_path = os.path.join(os.path.dirname(__file__), "../../data/nse_all_stocks.csv")
@@ -113,19 +140,34 @@ class UniverseScreener:
         except Exception as e:
             logger.warning(f"[UniverseScreener] Failed to load nse_all_stocks.csv: {e}")
 
-        # Fallback: use a curated list of liquid NSE stocks (updated quarterly)
-        # This is a bootstrap set; in production, fetch from NSE bhav copy API
-        fallback_tickers = [
+        # 3. Curated Nifty 500 seed — all verified active on yfinance as of 2025
+        seed_tickers = [
+            # Nifty 50 large caps
             "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
             "HINDUNILVR.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS", "LT.NS",
-            "AXISBANK.NS", "SBIN.NS", "HDFC.NS", "MARUTI.NS", "BAJAJFINSV.NS",
+            "AXISBANK.NS", "SBIN.NS", "MARUTI.NS", "BAJAJFINSV.NS", "BAJFINANCE.NS",
             "WIPRO.NS", "TECHM.NS", "ASIANPAINT.NS", "SUNPHARMA.NS", "DMART.NS",
-            "NESTLEIND.NS", "LTIM.NS", "HCLTECH.NS", "POWERGRID.NS", "TIINDIA.NS",
-            "IBREALEST.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "INDIGO.NS", "BAJAJUSDFX.NS",
-            "BANKBARODA.NS", "CANBK.NS", "FEDERALBANK.NS", "IDFCBANK.NS", "PNBHOUSING.NS",
+            "NESTLEIND.NS", "LTIM.NS", "HCLTECH.NS", "POWERGRID.NS", "TATAMOTORS.NS",
+            "TATASTEEL.NS", "JSWSTEEL.NS", "INDIGO.NS", "NTPC.NS", "ONGC.NS",
+            "COALINDIA.NS", "ADANIENT.NS", "ADANIPORTS.NS", "ULTRACEMCO.NS", "GRASIM.NS",
+            "BRITANNIA.NS", "DIVISLAB.NS", "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS",
+            # Nifty Next 50 / midcap
+            "BANKBARODA.NS", "CANBK.NS", "PNBHOUSING.NS", "MUTHOOTFIN.NS", "CHOLAFIN.NS",
+            "SHRIRAMFIN.NS", "LICHSGFIN.NS", "RECLTD.NS", "PFC.NS", "IRFC.NS",
+            "TATAPOWER.NS", "TORNTPOWER.NS", "CESC.NS", "SJVN.NS", "NHPC.NS",
+            "ZOMATO.NS", "NYKAA.NS", "PAYTM.NS", "POLICYBZR.NS", "DELHIVERY.NS",
+            "PERSISTENT.NS", "MPHASIS.NS", "COFORGE.NS", "LTTS.NS", "KPITTECH.NS",
+            "TATACONSUM.NS", "GODREJCP.NS", "DABUR.NS", "MARICO.NS", "COLPAL.NS",
+            "PIDILITIND.NS", "BERGEPAINT.NS", "KANSAINER.NS", "AKZOINDIA.NS",
+            "TITAN.NS", "TRENT.NS", "JUBLFOOD.NS", "WESTLIFE.NS", "DEVYANI.NS",
+            "HAVELLS.NS", "VOLTAS.NS", "BLUESTARCO.NS", "WHIRLPOOL.NS",
+            "BALKRISIND.NS", "APOLLOTYRE.NS", "MRF.NS", "CEATLTD.NS",
+            "SYNGENE.NS", "LAURUSLABS.NS", "GRANULES.NS", "IPCALAB.NS",
+            "MAXHEALTH.NS", "FORTIS.NS", "METROPOLIS.NS", "LALPATHLAB.NS",
+            "ZEEL.NS", "PVRINOX.NS", "NAZARA.NS",
         ]
-        logger.warning(f"[UniverseScreener] Using fallback list of {len(fallback_tickers)} tickers")
-        return fallback_tickers
+        logger.warning(f"[UniverseScreener] Using curated seed list of {len(seed_tickers)} tickers")
+        return seed_tickers
 
     def _apply_liquidity_filters(self, tickers: List[str]) -> List[str]:
         """

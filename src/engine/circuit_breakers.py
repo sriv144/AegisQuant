@@ -60,7 +60,7 @@ class VolatilityCircuitBreaker:
 
 
 class TimeWindowRule:
-    def __init__(self, no_trade_before: str = "09:35", no_trade_after: str = "15:55"):
+    def __init__(self, no_trade_before: str = "09:15", no_trade_after: str = "15:25"):
         self.start_fmt = datetime.strptime(no_trade_before, "%H:%M").time()
         self.end_fmt = datetime.strptime(no_trade_after, "%H:%M").time()
 
