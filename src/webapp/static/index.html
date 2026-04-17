@@ -4,136 +4,186 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AegisQuant Dashboard</title>
-    <!-- Use Outfit font for a modern look -->
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar -->
         <aside class="sidebar">
             <div class="logo-area">
                 <div class="logo-icon"></div>
                 <h2>AegisQuant</h2>
             </div>
             <nav class="nav-menu">
-                <a href="#" class="nav-item active">Dashboard</a>
-                <a href="#" class="nav-item">Positions</a>
-                <a href="#" class="nav-item">Decisions</a>
-                <a href="#" class="nav-item">Settings</a>
+                <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
+                <a href="#" class="nav-item" data-page="positions">Positions</a>
+                <a href="#" class="nav-item" data-page="decisions">Decisions</a>
             </nav>
+            <div class="sidebar-footer">
+                <div class="mode-badge" id="mode-badge">Paper Mode</div>
+            </div>
         </aside>
 
-        <!-- Main Content -->
         <main class="main-content">
-            <header class="topbar">
-                <h1>Overview</h1>
-                <div class="user-profile">
-                    <span class="status-indicator"></span> Live Mode (Mock Data)
-                </div>
-            </header>
-
-            <!-- Dashboard Content -->
-            <div class="dashboard-grid">
-                <!-- KPI Cards -->
-                <div class="metric-card">
-                    <h3>Portfolio Value</h3>
-                    <div class="value" id="val-portfolio">₹0.00</div>
-                    <div class="subtext" id="val-pnl">Fetching...</div>
-                </div>
-
-                <div class="metric-card">
-                    <h3>Max Drawdown</h3>
-                    <div class="value text-danger" id="val-drawdown">0.00%</div>
-                    <div class="subtext">From ATH</div>
-                </div>
-
-                <div class="metric-card">
-                    <h3>Active Positions</h3>
-                    <div class="value" id="val-positions">0</div>
-                    <div class="subtext" id="val-exposure">Gross exposure: —</div>
-                </div>
-
-                <div class="metric-card">
-                    <h3>Last Run</h3>
-                    <div class="value" style="font-size:1rem" id="val-last-run">—</div>
-                    <div class="subtext" id="val-model">Model: —</div>
-                </div>
-
-                <!-- Main Chart spanning full width -->
-                <div class="chart-container span-full">
-                    <div class="chart-header">
-                        <h2>Portfolio Performance</h2>
-                        <div class="time-filters">
-                            <button class="active">1W</button>
-                            <button>1M</button>
-                            <button>3M</button>
-                            <button>1Y</button>
-                        </div>
+            <!-- ── PAGE: DASHBOARD ── -->
+            <div id="page-dashboard" class="page active">
+                <header class="topbar">
+                    <h1>Overview</h1>
+                    <div class="user-profile">
+                        <span class="status-indicator"></span>
+                        <span id="last-refresh">Refreshing...</span>
                     </div>
-                    <canvas id="pnlChart"></canvas>
-                </div>
+                </header>
+                <div class="dashboard-grid">
+                    <div class="metric-card">
+                        <h3>Portfolio Value</h3>
+                        <div class="value" id="val-portfolio">₹—</div>
+                        <div class="subtext" id="val-pnl">—</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Total P&amp;L</h3>
+                        <div class="value" id="val-total-pnl">₹—</div>
+                        <div class="subtext">Since inception</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Max Drawdown</h3>
+                        <div class="value text-danger" id="val-drawdown">0.00%</div>
+                        <div class="subtext">From peak equity</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Active Positions</h3>
+                        <div class="value" id="val-positions">—</div>
+                        <div class="subtext" id="val-exposure">—</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Gross Exposure</h3>
+                        <div class="value" id="val-gross">—</div>
+                        <div class="subtext" id="val-net-exp">Net: —</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Last Run</h3>
+                        <div class="value" style="font-size:0.95rem;line-height:1.4" id="val-last-run">—</div>
+                        <div class="subtext" id="val-model">—</div>
+                    </div>
 
-                <!-- Latest Run Positions -->
-                <div class="data-table-container span-full">
-                    <h2>Latest Run — Agent Positions <span id="run-timestamp" style="font-size:0.8rem;font-weight:400;opacity:0.6"></span></h2>
-                    <div id="run-summary" style="display:flex;gap:2rem;margin-bottom:1rem;font-size:0.85rem;opacity:0.8"></div>
-                    <table class="modern-table">
-                        <thead>
-                            <tr>
+                    <div class="chart-container span-full">
+                        <div class="chart-header">
+                            <h2>Portfolio Value Over Time</h2>
+                        </div>
+                        <canvas id="pnlChart"></canvas>
+                    </div>
+
+                    <div class="data-table-container span-full">
+                        <div class="table-header-row">
+                            <h2>Latest Run — Agent Positions
+                                <span id="run-timestamp" class="dim-label"></span>
+                            </h2>
+                            <div id="run-summary" class="run-summary-pills"></div>
+                        </div>
+                        <table class="modern-table">
+                            <thead><tr>
                                 <th>Symbol</th>
                                 <th>Direction</th>
                                 <th>Weight</th>
                                 <th>Capital Allocated</th>
-                            </tr>
-                        </thead>
-                        <tbody id="latest-run-body">
-                            <tr><td colspan="4" style="text-align:center;opacity:0.5">Loading...</td></tr>
-                        </tbody>
-                    </table>
+                            </tr></thead>
+                            <tbody id="latest-run-body">
+                                <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
+            </div>
 
-                <!-- Recent Decisions -->
-                <div class="data-table-container">
-                    <h2>Recent AI Decisions</h2>
-                    <table class="modern-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Model Version</th>
-                                <th>Circuit Breaker</th>
-                                <th>Transaction Costs(bps)</th>
-                            </tr>
-                        </thead>
-                        <tbody id="decisions-body">
-                        </tbody>
-                    </table>
-                </div>
+            <!-- ── PAGE: POSITIONS ── -->
+            <div id="page-positions" class="page">
+                <header class="topbar">
+                    <h1>Positions</h1>
+                    <div class="user-profile"><span class="status-indicator"></span> Live data</div>
+                </header>
 
-                <!-- Open Positions (CNC) -->
-                <div class="data-table-container">
-                    <h2>Open Positions (CNC)</h2>
-                    <table class="modern-table">
-                        <thead>
-                            <tr>
+                <div class="section-grid">
+                    <!-- Exposure donut -->
+                    <div class="card half-card">
+                        <h2>Exposure Breakdown</h2>
+                        <div class="donut-wrap">
+                            <canvas id="exposureChart"></canvas>
+                        </div>
+                        <div id="exposure-legend" class="legend-row"></div>
+                    </div>
+
+                    <!-- Sector breakdown bar -->
+                    <div class="card half-card">
+                        <h2>Holdings by Weight</h2>
+                        <canvas id="holdingsBar"></canvas>
+                    </div>
+
+                    <!-- Full positions table -->
+                    <div class="card full-card">
+                        <div class="table-header-row">
+                            <h2>All Positions</h2>
+                            <div class="filter-row">
+                                <button class="filter-btn active" data-filter="all">All</button>
+                                <button class="filter-btn" data-filter="LONG">Long</button>
+                                <button class="filter-btn" data-filter="SHORT">Short</button>
+                            </div>
+                        </div>
+                        <table class="modern-table" id="positions-full-table">
+                            <thead><tr>
                                 <th>Symbol</th>
-                                <th>Qty</th>
-                                <th>Entry Price</th>
-                                <th>Type</th>
-                                <th>P&L %</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-body">
-                        </tbody>
-                    </table>
+                                <th>Direction</th>
+                                <th>Weight</th>
+                                <th>Capital (₹)</th>
+                                <th>Last Price</th>
+                                <th>Est. Shares*</th>
+                            </tr></thead>
+                            <tbody id="positions-full-body"></tbody>
+                        </table>
+                        <p class="footnote">* Paper mode — no real orders placed on Groww. Est. shares = capital ÷ last price (yfinance).</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── PAGE: DECISIONS ── -->
+            <div id="page-decisions" class="page">
+                <header class="topbar">
+                    <h1>AI Decisions</h1>
+                    <div class="user-profile"><span class="status-indicator"></span> Agent log</div>
+                </header>
+
+                <div class="section-grid">
+                    <!-- Decision history table -->
+                    <div class="card full-card">
+                        <h2>Decision History</h2>
+                        <table class="modern-table">
+                            <thead><tr>
+                                <th>Timestamp (IST)</th>
+                                <th>Model</th>
+                                <th>Universe</th>
+                                <th>Longs</th>
+                                <th>Shorts</th>
+                                <th>Gross Exp.</th>
+                                <th>Circuit Breaker</th>
+                                <th>Slippage (bps)</th>
+                            </tr></thead>
+                            <tbody id="decisions-full-body"></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Expanded decision detail panel -->
+                    <div class="card full-card" id="decision-detail-card" style="display:none">
+                        <div class="table-header-row">
+                            <h2 id="detail-title">Decision Detail</h2>
+                            <button class="close-btn" id="close-detail">✕ Close</button>
+                        </div>
+                        <div id="detail-body"></div>
+                    </div>
                 </div>
             </div>
         </main>
     </div>
 
-    <!-- Application Logic -->
     <script src="/static/app.js"></script>
 </body>
 </html>

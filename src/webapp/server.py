@@ -124,17 +124,39 @@ def get_latest_run():
         weights = json.loads(weights_raw or "[]")
 
         PORTFOLIO_VALUE = 250_000.0
+
+        # Fetch latest prices for share count estimates (best-effort, no error on failure)
+        latest_prices = {}
+        try:
+            import yfinance as yf
+            active = [t for t, w in zip(tickers, weights) if abs(w) >= 0.001]
+            if active:
+                data = yf.download(active, period="1d", auto_adjust=True, progress=False)
+                close = data["Close"] if "Close" in data else pd.DataFrame()
+                if not close.empty:
+                    for t in active:
+                        try:
+                            latest_prices[t] = float(close[t].dropna().iloc[-1])
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
         positions = []
         for ticker, w in zip(tickers, weights):
             if abs(w) < 0.001:
                 continue
             direction = "LONG" if w > 0 else "SHORT"
             rupees = abs(w) * PORTFOLIO_VALUE
+            price = latest_prices.get(ticker)
+            est_shares = int(rupees / price) if price and price > 0 else None
             positions.append({
                 "ticker": ticker,
                 "weight_pct": round(w * 100, 2),
                 "direction": direction,
                 "rupees": round(rupees, 0),
+                "last_price": round(price, 2) if price else None,
+                "est_shares": est_shares,
             })
 
         positions.sort(key=lambda x: -abs(x["weight_pct"]))
