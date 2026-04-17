@@ -41,18 +41,19 @@ class ExecutionAgent(BaseAgent):
             "gap_fill", "volatility_breakout", "mean_reversion", "pairs_trading"
         }
 
-        # CNC priority
-        if confidence >= 0.6 and strategy in delivery_strategies:
+        # CNC priority — lower bar since committee already filtered weak signals
+        if confidence >= 0.4 and strategy in delivery_strategies:
             if state.get("delivery_budget", 0) > 0:
                 return "CNC"
 
-        # MIS if intraday strategy + high conviction
-        if confidence >= 0.5 and strategy in intraday_strategies:
-            news_volume = alt_data.get("news_volume", 0)
-            vix = portfolio.get("vix_raw", 20)
-            high_catalyst = news_volume > 2 or vix > 25
-            if state.get("intraday_budget", 0) > 0 and high_catalyst:
+        # MIS if intraday strategy
+        if confidence >= 0.4 and strategy in intraday_strategies:
+            if state.get("intraday_budget", 0) > 0:
                 return "MIS"
+
+        # Fallback: any positive conviction with delivery budget → CNC
+        if confidence > 0 and state.get("delivery_budget", 0) > 0:
+            return "CNC"
 
         return "SKIP"
 

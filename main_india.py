@@ -192,8 +192,10 @@ def main_india_live_loop():
 
         allocation = final_state.get("allocation_request", {})
         exposure = float(allocation.get("target_exposure_pct", 0.0))
-        direction = allocation.get("rl_direction", "LONG")
-        target_weights[i] = exposure if direction != "SHORT" else -exposure
+        # Use committee direction (set by LLM) — rl_direction from PM can be unreliable
+        # if the RL model is degenerate (always outputs the same sign).
+        committee_dir = final_state.get("committee_decision", {}).get("direction", "LONG")
+        target_weights[i] = exposure if committee_dir != "SHORT" else -exposure
 
         # Extract trade_type from execution result
         trade_type = final_state.get("trade_type", "SKIP")
