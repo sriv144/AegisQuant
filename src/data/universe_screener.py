@@ -71,24 +71,33 @@ class UniverseScreener:
                 logger.info(f"[UniverseScreener] Using cached universe ({age.days}d old)")
                 return self._cache.get("tickers", [])
 
-        logger.info("[UniverseScreener] Re-running full universe screen...")
+        print("[UniverseScreener] Re-running full universe screen...")
 
         # Get all NSE tickers
-        all_tickers = self._fetch_nse_all_tickers()
-        logger.info(f"[UniverseScreener] Starting with {len(all_tickers)} NSE tickers")
+        try:
+            all_tickers = self._fetch_nse_all_tickers()
+        except Exception as e:
+            print(f"[UniverseScreener] FATAL: _fetch_nse_all_tickers crashed: {e}")
+            all_tickers = []
+        print(f"[UniverseScreener] Starting with {len(all_tickers)} NSE tickers")
 
         # Apply 4-stage filtering
         tickers = self._apply_liquidity_filters(all_tickers)
-        logger.info(f"[UniverseScreener] After liquidity: {len(tickers)} tickers")
+        print(f"[UniverseScreener] After liquidity: {len(tickers)} tickers")
 
         tickers = self._apply_quality_filters(tickers)
-        logger.info(f"[UniverseScreener] After quality: {len(tickers)} tickers")
+        print(f"[UniverseScreener] After quality: {len(tickers)} tickers")
 
         scored_tickers = self._apply_opportunity_filters(tickers)
-        logger.info(f"[UniverseScreener] After opportunity scoring: {len(scored_tickers)} tickers")
+        print(f"[UniverseScreener] After opportunity scoring: {len(scored_tickers)} tickers")
 
         final_tickers = self._apply_diversification_filters(scored_tickers, open_positions or {})
-        logger.info(f"[UniverseScreener] Final universe: {len(final_tickers)} tickers")
+        print(f"[UniverseScreener] Final universe: {len(final_tickers)} tickers")
+
+        # Safety net: if all filter stages wiped the universe, fall back to seed directly
+        if not final_tickers and all_tickers:
+            print(f"[UniverseScreener] WARNING: all filters eliminated all tickers — using raw seed ({len(all_tickers)} tickers)")
+            final_tickers = all_tickers
 
         # Cache result
         self._cache = {"tickers": final_tickers, "timestamp": datetime.now().isoformat()}
