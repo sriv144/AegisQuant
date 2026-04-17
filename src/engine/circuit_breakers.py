@@ -6,7 +6,9 @@ unbounded RL policy decisions or extreme macro events.
 """
 import numpy as np
 from typing import Dict, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class MaxPositionRule:
     def __init__(self, max_weight: float = 0.95):
@@ -65,10 +67,10 @@ class TimeWindowRule:
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """Prevents trading during highly illiquid open/close auctions."""
         # Note: 'current_weights' must be passed in state to preserve them
-        curr_time = datetime.now().time()
+        curr_time = datetime.now(IST).time()
 
         if curr_time < self.start_fmt or curr_time > self.end_fmt:
-            current_weights = state.get("current_weights", target_weights)
+            current_weights = state.get("current_weights", np.zeros_like(target_weights))
             return current_weights, True
 
         return target_weights, False
@@ -124,7 +126,7 @@ class MISAutoCloseRule:
         """
         If current time >= 3:10 PM IST and any MIS position exists, close all MIS.
         """
-        curr_time = datetime.now().time()
+        curr_time = datetime.now(IST).time()
 
         if curr_time >= self.close_time_fmt:
             # Check if any trade_types are MIS
