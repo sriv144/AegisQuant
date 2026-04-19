@@ -8,3 +8,13 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Pip install typo artifacts (e.g. `pip install foo=1.2` drops a file named =1.2)
+=*
+
+# Test + scratch output dumps
+pytest_*.txt
+pcr.txt
+
+# Zipped model artifacts — prefer storing in model_registry/ instead of the repo root
+/*.zip
