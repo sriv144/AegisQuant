@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        env:
+          # Keep CI offline: no live broker / LLM calls.
+          ENABLE_BROKER_EXECUTION: 'False'
+          ENABLE_MOCK_DATA: 'True'
+          OPENAI_API_KEY: 'sk-ci-placeholder'
+          ANTHROPIC_API_KEY: 'sk-ci-placeholder'
+          NEWSAPI_KEY: 'ci-placeholder'
+          GROWW_API_KEY: 'ci-placeholder'
+          GROWW_SECRET_KEY: 'ci-placeholder'
+        run: pytest tests/ -q --maxfail=1
