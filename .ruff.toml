@@ -1,0 +1,36 @@
+# Minimal Ruff config seeded by auto-researcher.
+# Intentionally gentle so adoption does not flood PRs on first run.
+# Tighten the rule set in subsequent runs once baseline is clean.
+
+line-length = 120
+target-version = "py311"
+
+extend-exclude = [
+    "backtest_results",
+    "model_registry",
+    "models",
+    "data",
+    "=*",
+    "pytest_clean.txt",
+    "pytest_output.txt",
+    "pytest_run.txt",
+    "*.zip",
+    "*.ipynb",
+]
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort import ordering
+    "UP",  # pyupgrade: flag obsolete syntax against py3.11 target
+]
+
+ignore = [
+    "E501",  # line length enforced by formatter, not linter
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["E402", "F401", "F811"]
+"scripts/**" = ["E402"]

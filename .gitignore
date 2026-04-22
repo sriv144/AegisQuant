@@ -1,10 +1,38 @@
+# Secrets and local env
 .env
+.env.*
+!.env.example
+
+# Python runtime and tooling caches
 .venv/
+venv/
 __pycache__/
-.pytest_cache/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# App-generated runtime logs
 alert_history.jsonl
 trading_history.jsonl
+
+# Local databases (broker cache, audit trail, etc.)
 *.db
 *.sqlite
 *.sqlite3
+
+# Accidental pip-install artifacts: `pip install foo =1.2.3` with a
+# stray space creates a zero- or garbage-byte file named `=1.2.3`.
+# These should never land in VCS.
+=*
+
+# Local pytest snapshots — CI output belongs in Actions artifacts, not git.
+pytest_clean.txt
+pytest_output.txt
+pytest_run.txt
+
+# Editors / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
