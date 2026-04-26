@@ -8,3 +8,26 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# pip-install typos: a stray `pip install foo =1.2.3` creates files literally
+# named `=1.2.3` in the repo root. Block them so they never sneak into a
+# commit again.
+=*
+
+# Stray pytest captures from local runs (the canonical reports live in CI)
+pytest_*.txt
+pytest-*.txt
+
+# Large artefacts and rendered reports — keep them out unless promoted to LFS
+backtest_results/*.png
+backtest_results/*.html
+backtest_results/*.csv
+
+# Notebook checkpoints
+.ipynb_checkpoints/

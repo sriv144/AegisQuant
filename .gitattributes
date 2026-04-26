@@ -1,0 +1,26 @@
+# Normalise line endings across Linux / macOS / Windows contributors.
+* text=auto eol=lf
+
+# Languages with strict diff grammars
+*.py    text diff=python
+*.md    text
+*.yml   text
+*.yaml  text
+*.json  text
+*.toml  text
+*.cfg   text
+*.ini   text
+*.sh    text eol=lf
+*.ps1   text eol=crlf
+
+# Treat model + data artefacts as binary so diffs do not explode.
+*.zip   binary
+*.pkl   binary
+*.h5    binary
+*.pt    binary
+*.onnx  binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.parquet binary
+*.feather binary

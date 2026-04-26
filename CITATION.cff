@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you reference AegisQuant in research, blog posts, or production work, please cite it as below."
+title: "AegisQuant: Multi-Asset RL Trading with Risk-Aware Portfolio Construction"
+abstract: >-
+  A multi-asset algorithmic trading pipeline using PPO/SAC reinforcement
+  learning, Gaussian HMM regime detection, SHAP attribution, and circuit
+  breakers. Includes a Streamlit command center, Alpaca / Groww execution
+  adapters, and a walk-forward backtester with Monte Carlo bootstrap.
+authors:
+  - family-names: "Srivathsa"
+    given-names: ""
+    alias: "sriv144"
+repository-code: "https://github.com/sriv144/AegisQuant"
+url: "https://github.com/sriv144/AegisQuant"
+keywords:
+  - reinforcement-learning
+  - quantitative-finance
+  - portfolio-management
+  - ppo
+  - sac
+  - shap
+  - risk-management
+  - regime-detection
+license: MIT
+version: "0.1.0"
+date-released: "2026-04-26"
