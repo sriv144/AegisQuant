@@ -1,0 +1,49 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11']
+    env:
+      # Tests should not require live trading credentials. Provide harmless
+      # placeholders so anything that reads os.environ at import time still works.
+      ALPACA_API_KEY: dummy
+      ALPACA_SECRET_KEY: dummy
+      ANTHROPIC_API_KEY: dummy
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest
+
+      - name: Run pytest
+        # Tests live under tests/. Use --maxfail to surface the first regressions
+        # quickly while still collecting full output for the rest.
+        run: |
+          python -m pytest tests/ -q --maxfail=5 -o cache_dir=.pytest_cache
