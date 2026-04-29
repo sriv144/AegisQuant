@@ -1,10 +1,43 @@
-.env
-.venv/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# Caches
 .pytest_cache/
-*.pyc
-alert_history.jsonl
-trading_history.jsonl
-*.db
-*.sqlite
-*.sqlite3
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets
+.env
+.env.local
+*.local.env
+
+# AegisQuant artifacts
+backtest_results/
+logs/
+*.log
+
+# Stray pip-install stderr captured to disk (e.g. "pip install pkg =1.2.3")
+=*
+
+# Local pytest run captures
+pytest_run.txt
+pytest_output.txt
+pytest_clean.txt
+
+# IDE
+.idea/
+.vscode/
