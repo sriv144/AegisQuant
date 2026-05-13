@@ -112,4 +112,68 @@ class DatabaseSessionManager:
         except Exception as e:
             logger.error(f"SQLAlchemy Insert Failed: {e}")
 
+    def compute_portfolio_value(self, initial_capital: float, current_prices: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Compute real portfolio value from DB-tracked positions.
+
+        Returns dict with: portfolio_value, realized_pnl, unrealized_pnl,
+        cash_balance, peak_equity, current_drawdown.
+        """
+        try:
+            with self.SessionLocal() as session:
+                closed = session.query(OpenPosition).filter(
+                    OpenPosition.status == "CLOSED",
+                    OpenPosition.pnl_pct.isnot(None),
+                ).all()
+                realized_pnl = sum(
+                    (p.exit_price - p.entry_price) * p.quantity
+                    for p in closed
+                    if p.exit_price is not None
+                )
+
+                open_pos = session.query(OpenPosition).filter(
+                    OpenPosition.status == "OPEN"
+                ).all()
+                invested = sum(p.entry_price * p.quantity for p in open_pos)
+                market_value = sum(
+                    current_prices.get(p.ticker, p.entry_price) * p.quantity
+                    for p in open_pos
+                )
+                unrealized_pnl = market_value - invested
+
+                cash_balance = initial_capital + realized_pnl - invested
+                portfolio_value = cash_balance + market_value
+
+                rows = session.query(DailyPnL.total_portfolio_value).order_by(
+                    DailyPnL.date.desc()
+                ).limit(500).all()
+                historical_peak = max((r[0] for r in rows), default=initial_capital)
+                peak_equity = max(portfolio_value, historical_peak, initial_capital)
+
+                drawdown = max(0.0, (peak_equity - portfolio_value) / peak_equity) if peak_equity > 0 else 0.0
+
+                return {
+                    "portfolio_value": round(portfolio_value, 2),
+                    "realized_pnl": round(realized_pnl, 2),
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "cash_balance": round(cash_balance, 2),
+                    "peak_equity": round(peak_equity, 2),
+                    "current_drawdown": round(drawdown, 6),
+                    "open_position_count": len(open_pos),
+                    "closed_trade_count": len(closed),
+                }
+        except Exception as e:
+            logger.error(f"compute_portfolio_value failed: {e}")
+            return {
+                "portfolio_value": initial_capital,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "cash_balance": initial_capital,
+                "peak_equity": initial_capital,
+                "current_drawdown": 0.0,
+                "open_position_count": 0,
+                "closed_trade_count": 0,
+            }
+
+
 db_manager = DatabaseSessionManager()

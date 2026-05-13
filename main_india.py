@@ -29,8 +29,7 @@ from src.db.models import db_manager
 
 _failsafe = ExecutionFailsafe()
 
-# Tracks all-time high portfolio equity across cycles to compute drawdown
-_peak_equity: list = [None]
+INITIAL_CAPITAL = 250_000.0  # ₹2.5 lakh paper capital — the single source of truth
 
 
 def _fetch_india_vix() -> float:
@@ -38,29 +37,25 @@ def _fetch_india_vix() -> float:
     return india_market_data.get_india_vix()
 
 
-def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list) -> dict:
+def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list, current_prices: dict) -> dict:
     """
-    Returns a portfolio state dict compatible with AgentState['portfolio_state'].
-    In mock mode: defaults. In live mode: queries Angel One for real positions.
+    Compute real portfolio state from DB-tracked positions and realized P&L.
+    No more hardcoded values — portfolio_value changes as trades win/lose.
     """
     vix = _fetch_india_vix()
     current_weights = np.zeros(len(tickers))
-    drawdown = 0.0
-    portfolio_value = 0.0
 
-    try:
-        portfolio_value = 250000.0  # ₹2.5 lakh paper capital
-        if _peak_equity[0] is None or portfolio_value > _peak_equity[0]:
-            _peak_equity[0] = portfolio_value
-        if _peak_equity[0] and _peak_equity[0] > 0:
-            drawdown = max(0.0, (_peak_equity[0] - portfolio_value) / _peak_equity[0])
-        mode_label = "paper" if executor.mock_mode else "live"
-        print(f"[LiveState] {mode_label} mode — portfolio_value=₹{portfolio_value:,.0f}")
-    except Exception as e:
-        portfolio_value = 250000.0
-        print(f"[LiveState] Portfolio fetch failed ({e}), using default ₹{portfolio_value:,.0f}")
+    pf = db_manager.compute_portfolio_value(INITIAL_CAPITAL, current_prices)
+    portfolio_value = pf["portfolio_value"]
+    drawdown = pf["current_drawdown"]
 
-    print(f"[LiveState] drawdown={drawdown:.4f}  india_vix={vix:.2f}  portfolio_value={portfolio_value:.0f}")
+    mode_label = "paper" if executor.mock_mode else "live"
+    print(
+        f"[LiveState] {mode_label} mode — portfolio_value=₹{portfolio_value:,.0f}  "
+        f"realized=₹{pf['realized_pnl']:,.0f}  unrealized=₹{pf['unrealized_pnl']:,.0f}  "
+        f"cash=₹{pf['cash_balance']:,.0f}  positions={pf['open_position_count']}"
+    )
+    print(f"[LiveState] drawdown={drawdown:.4f}  india_vix={vix:.2f}  peak=₹{pf['peak_equity']:,.0f}")
 
     return {
         "current_drawdown": drawdown,
@@ -72,36 +67,65 @@ def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list) -> dict:
 
 def _fetch_weekly_strategy_scores() -> dict:
     """
-    Query aegisquant_live.db for the last 7 days of decisions.
-    Returns simple strategy performance scoring.
+    Compute per-strategy performance scores from realized trades in the last 30 days.
+    Returns {strategy_name: score} where score is avg P&L % weighted by trade count.
+    Strategies with no recent trades get a neutral score of 0.0.
     """
     try:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
         import os
 
         db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
+        from sqlalchemy import create_engine
         engine = create_engine(db_url)
 
         query = text("""
-            SELECT model_version, COUNT(*) as trade_count
-            FROM decisions
-            WHERE timestamp > datetime('now', '-7 days')
-              AND model_version LIKE 'india_%'
-            GROUP BY model_version
-            ORDER BY trade_count DESC
+            SELECT strategy,
+                   COUNT(*) as trade_count,
+                   AVG(pnl_pct) as avg_pnl,
+                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
+            FROM open_positions
+            WHERE status = 'CLOSED'
+              AND exit_date > datetime('now', '-30 days')
+              AND pnl_pct IS NOT NULL
+            GROUP BY strategy
+            ORDER BY avg_pnl DESC
         """)
 
         with engine.connect() as conn:
             result = conn.execute(query)
             rows = result.fetchall()
 
-        # Simple scoring: more recent trades = higher score
-        # Full implementation would compute Sharpe from price data
-        return {}
+        if not rows:
+            return _default_strategy_scores()
+
+        scores = {}
+        for row in rows:
+            strategy, trade_count, avg_pnl, wins = row
+            win_rate = wins / trade_count if trade_count > 0 else 0.0
+            scores[strategy] = round(avg_pnl * 100 + win_rate * 10, 2)
+
+        print(f"[Strategy Scores] {len(scores)} strategies scored from {sum(r[1] for r in rows)} trades")
+        return scores
 
     except Exception as e:
-        print(f"[Strategy Scores] Query failed ({e}), returning empty dict")
-        return {}
+        print(f"[Strategy Scores] Query failed ({e}), using defaults")
+        return _default_strategy_scores()
+
+
+def _default_strategy_scores() -> dict:
+    """Fallback scores when no trade history exists — equal weight across core strategies."""
+    return {
+        "momentum": 0.0,
+        "mean_reversion": 0.0,
+        "trend_following": 0.0,
+        "factor_investing": 0.0,
+        "volatility_breakout": 0.0,
+        "earnings_momentum": 0.0,
+        "sector_rotation": 0.0,
+        "gap_fill": 0.0,
+        "pairs_trading": 0.0,
+    }
 
 
 def main_india_live_loop():
@@ -126,8 +150,8 @@ def main_india_live_loop():
         position_manager.close_position(ticker, theo_prices[ticker], reason="EXIT_SIGNAL")
         print(f"[PositionManager] Closed {ticker}")
 
-    # 4. Build live portfolio state
-    portfolio_state = _get_live_portfolio_state(executor, UNIVERSE)
+    # 4. Build live portfolio state (uses DB-tracked P&L, not hardcoded)
+    portfolio_state = _get_live_portfolio_state(executor, UNIVERSE, theo_prices)
 
     # 5. Capital allocator: compute intraday vs delivery budgets
     intraday_budget, delivery_budget = capital_allocator.get_budgets(portfolio_state)
@@ -173,9 +197,9 @@ def main_india_live_loop():
             "market_data": {"ticker": ticker, "price": theo_prices.get(ticker, 0.0)},
             "alternative_data": ticker_alt_data[ticker],
             "technical_indicators": ticker_indicators[ticker],
-            "active_strategies": list(strategy_scores.keys())[:3] if strategy_scores else [],
+            "active_strategies": sorted(strategy_scores, key=strategy_scores.get, reverse=True)[:5],
             "strategy_scores": strategy_scores,
-            "current_strategy": list(strategy_scores.keys())[0] if strategy_scores else "momentum",
+            "current_strategy": max(strategy_scores, key=strategy_scores.get) if strategy_scores else "momentum",
             "trade_type": "SKIP",
             "stop_loss_pct": 0.08,
             "take_profit_pct": 0.20,
@@ -256,12 +280,12 @@ def main_india_live_loop():
         model_version=model_version,
     )
 
-    # 15. Log daily P&L
+    # 15. Log daily P&L (uses real tracked portfolio value, not hardcoded)
     try:
         daily_pnl = position_manager.get_daily_pnl()
         from src.db.models import DailyPnL
-        from sqlalchemy.orm import Session, sessionmaker
         from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
         import os
 
         db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
@@ -269,16 +293,29 @@ def main_india_live_loop():
         SessionLocal = sessionmaker(bind=engine)
         session = SessionLocal()
 
-        pnl_record = DailyPnL(
-            date=datetime.now().strftime("%Y-%m-%d"),
-            total_portfolio_value=portfolio_state["portfolio_value"],
-            intraday_pnl=daily_pnl["intraday_pnl"],
-            delivery_pnl=daily_pnl["delivery_pnl"],
-            total_pnl=daily_pnl["total_pnl"],
-            drawdown=portfolio_state["current_drawdown"],
-            intraday_ratio_used=capital_allocator.current_intraday_ratio,
-        )
-        session.add(pnl_record)
+        today = datetime.now().strftime("%Y-%m-%d")
+        existing = session.query(DailyPnL).filter(DailyPnL.date == today).first()
+
+        total_pnl = daily_pnl["total_pnl"]
+        if existing:
+            existing.total_portfolio_value = portfolio_state["portfolio_value"]
+            existing.intraday_pnl = daily_pnl["intraday_pnl"]
+            existing.delivery_pnl = daily_pnl["delivery_pnl"]
+            existing.total_pnl = total_pnl
+            existing.drawdown = portfolio_state["current_drawdown"]
+            existing.intraday_ratio_used = capital_allocator.current_intraday_ratio
+        else:
+            pnl_record = DailyPnL(
+                date=today,
+                total_portfolio_value=portfolio_state["portfolio_value"],
+                intraday_pnl=daily_pnl["intraday_pnl"],
+                delivery_pnl=daily_pnl["delivery_pnl"],
+                total_pnl=total_pnl,
+                drawdown=portfolio_state["current_drawdown"],
+                intraday_ratio_used=capital_allocator.current_intraday_ratio,
+            )
+            session.add(pnl_record)
+
         session.commit()
         session.close()
     except Exception as e:

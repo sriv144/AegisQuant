@@ -21,14 +21,12 @@ class CapitalAllocator:
     Learns which allocation ratio works best over time.
     """
 
-    def __init__(self, initial_intraday_ratio: float = 0.20, total_capital: float = 250000.0):
+    def __init__(self, initial_intraday_ratio: float = 0.20):
         """
         Args:
             initial_intraday_ratio: Initial split (0.20 = 20% intraday, 80% delivery)
-            total_capital: Total portfolio capital in rupees
         """
         self.initial_intraday_ratio = initial_intraday_ratio
-        self.total_capital = total_capital
 
         # Current allocation (before RL adjusts)
         self.current_intraday_ratio = initial_intraday_ratio
@@ -72,8 +70,7 @@ class CapitalAllocator:
         # Cap intraday at 50% max
         ratio = min(ratio, 0.50)
 
-        # Use current portfolio value if provided, else use initial capital
-        capital = portfolio_state.get("portfolio_value", self.total_capital) if portfolio_state else self.total_capital
+        capital = portfolio_state.get("portfolio_value", 250000.0) if portfolio_state else 250000.0
 
         intraday_budget = capital * ratio
         delivery_budget = capital * (1 - ratio)
@@ -134,22 +131,10 @@ class CapitalAllocator:
 
         self.rl_enabled = True
 
-    @property
-    def intraday_budget(self) -> float:
-        """Current intraday budget."""
-        return self.total_capital * self.current_intraday_ratio
-
-    @property
-    def delivery_budget(self) -> float:
-        """Current delivery budget."""
-        return self.total_capital * (1 - self.current_intraday_ratio)
-
     def to_dict(self) -> dict:
         """Serialize state for logging."""
         return {
             "current_intraday_ratio": self.current_intraday_ratio,
-            "intraday_budget": self.intraday_budget,
-            "delivery_budget": self.delivery_budget,
             "rl_enabled": self.rl_enabled,
             "weeks_of_data": len(self.performance_history),
         }

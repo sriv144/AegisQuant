@@ -32,71 +32,104 @@ class PMAgent(BaseAgent):
         registry = ModelRegistry()
         prod_path = registry.get_production_model()
 
-        # Priority: registry production model > fixed path > glob
+        # Priority: registry production → curriculum model → walk-forward latest → legacy
         candidates = []
         if prod_path:
             candidates.append(Path(str(prod_path)))
-        candidates.extend([Path(MODEL_PATH), *sorted(Path().glob(FALLBACK_MODEL_GLOB))])
-        model_candidates = candidates
+        curriculum_nsei = Path("ppo_curriculum_^NSEI.zip")
+        if curriculum_nsei.exists():
+            candidates.append(curriculum_nsei)
+        wf_models = sorted(Path().glob("models/wf_w*_ppo.zip"))
+        if wf_models:
+            candidates.append(wf_models[-1])
+        candidates.append(Path(MODEL_PATH))
 
-        observation_space = Box(low=-1.0, high=1.0, shape=(6,), dtype=np.float32)
         action_space = Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
 
         import numpy.core
         import numpy.core.numeric
-
-        # Older checkpoints reference NumPy's legacy private module path during unpickling.
         sys.modules.setdefault("numpy._core", numpy.core)
         sys.modules.setdefault("numpy._core.numeric", numpy.core.numeric)
 
-        for model_path in model_candidates:
+        for model_path in candidates:
             if not model_path.exists():
                 continue
 
-            print(f"[{self.name}] Loading RL Optimization Model from {model_path}...")
+            print(f"[{self.name}] Loading RL model from {model_path}...")
             try:
-                return PPO.load(
-                    str(model_path),
-                    custom_objects={
-                        "observation_space": observation_space,
-                        "action_space": action_space,
-                    },
-                )
-            except Exception as exc:
-                print(f"[{self.name}] Failed to load RL model '{model_path}': {exc}")
+                model = PPO.load(str(model_path))
+                obs_dim = model.observation_space.shape[0]
+                self._obs_dim = obs_dim
+                print(f"[{self.name}] Loaded OK — obs_dim={obs_dim}")
+                return model
+            except Exception:
+                pass
+
+            for obs_dim in (14, 6):
+                obs_space = Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
+                try:
+                    model = PPO.load(
+                        str(model_path),
+                        custom_objects={
+                            "observation_space": obs_space,
+                            "action_space": action_space,
+                        },
+                    )
+                    self._obs_dim = obs_dim
+                    print(f"[{self.name}] Loaded OK (forced obs_dim={obs_dim})")
+                    return model
+                except Exception as exc:
+                    print(f"[{self.name}] Failed obs_dim={obs_dim} for '{model_path}': {exc}")
 
         return None
 
     def _extract_rl_state(self, state: AgentState) -> np.ndarray:
         """
-        Builds the 6-dimension state array for the RL model exactly matching the Env.
-        [Volatility, Quant, Fund, Macro, Sentiment, Drawdown]
+        Build observation vector matching the loaded model's expected dimension.
+        14-D: matches HistoricalHedgeFundEnv (walk-forward / curriculum models).
+        6-D:  matches legacy HedgeFundEnv (random-noise models).
         """
-        vol = 0.1 # Default or extract from technicals if piped
-        
-        # Simplified mapping from text actions to [-1.0, 1.0] signals
+        obs_dim = getattr(self, "_obs_dim", 6)
+        ti = state.get("technical_indicators", {})
+        pf = state.get("portfolio_state", {})
+        drawdown = pf.get("current_drawdown", 0.0)
+
+        if obs_dim == 14:
+            vix_raw = pf.get("vix_raw", 20.0)
+            return np.array([
+                np.clip(ti.get("Volatility_20_Z", 0.0), -1.0, 1.0),
+                np.clip(ti.get("RSI_14_Z", 0.0), -1.0, 1.0),
+                np.clip(ti.get("MACD_Z", 0.0), -1.0, 1.0),
+                np.clip(ti.get("BB_Position_Z", 0.0), -1.0, 1.0),
+                np.clip(ti.get("mom_12m_Z", 0.0), -1.0, 1.0),
+                0.0,  # current_weight — 0 for new position
+                np.clip(drawdown, 0.0, 1.0),
+                1.0, 0.0, 0.0, 0.0,  # regime one-hot default: Bull Quiet
+                0.0,  # portfolio_return_5d
+                np.clip((vix_raw - 20.0) / 10.0, -1.0, 1.0),  # vix_z approx
+                0.0,  # yield_curve_slope
+            ], dtype=np.float32)
+
         def _map_act(acts: list) -> float:
-            if not acts: return 0.0
+            if not acts:
+                return 0.0
             score = sum(1.0 if "LONG" in a or "BUY" in a else -1.0 if "SHORT" in a or "SELL" in a else 0.0 for a in acts)
             return score / len(acts)
 
         signals = state.get("research_signals", [])
-        
         q_act = [s.get("action") for s in signals if "Quant" in s.get("agent_name", "")]
         f_act = [s.get("action") for s in signals if "Fundamental" in s.get("agent_name", "")]
         m_act = [s.get("action") for s in signals if "Macro" in s.get("agent_name", "")]
         s_act = [s.get("action") for s in signals if "Sentiment" in s.get("agent_name", "")]
+        vol = np.clip(ti.get("Volatility_20_Z", 0.1), 0.0, 1.0)
 
-        drawdown = state.get("portfolio_state", {}).get("current_drawdown", 0.0)
-
-        # Normalization clipping just in case
         return np.array([
-            np.clip(vol, 0.0, 1.0),
+            vol,
             np.clip(_map_act(q_act), -1.0, 1.0),
             np.clip(_map_act(f_act), -1.0, 1.0),
             np.clip(_map_act(m_act), -1.0, 1.0),
             np.clip(_map_act(s_act), -1.0, 1.0),
-            np.clip(drawdown, 0.0, 1.0)
+            np.clip(drawdown, 0.0, 1.0),
         ], dtype=np.float32)
 
     def invoke(self, state: AgentState) -> Dict[str, Any]:
