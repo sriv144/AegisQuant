@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 
 from src import config  # noqa: F401  # Ensures .env is loaded
-from src.execution.groww_executor import GrowwExecutor
+from src.execution import get_broker
+from src.execution.broker_base import BaseBroker
 from src.data.india_market_data import india_market_data
 from src.data.feature_engineering import feature_engineer
 from src.data.alternative_data import alt_data as alt_data_collector
@@ -37,7 +38,7 @@ def _fetch_india_vix() -> float:
     return india_market_data.get_india_vix()
 
 
-def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list, current_prices: dict) -> dict:
+def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices: dict) -> dict:
     """
     Compute real portfolio state from DB-tracked positions and realized P&L.
     No more hardcoded values — portfolio_value changes as trades win/lose.
@@ -49,7 +50,7 @@ def _get_live_portfolio_state(executor: GrowwExecutor, tickers: list, current_pr
     portfolio_value = pf["portfolio_value"]
     drawdown = pf["current_drawdown"]
 
-    mode_label = "paper" if executor.mock_mode else "live"
+    mode_label = broker.__class__.__name__
     print(
         f"[LiveState] {mode_label} mode — portfolio_value=₹{portfolio_value:,.0f}  "
         f"realized=₹{pf['realized_pnl']:,.0f}  unrealized=₹{pf['unrealized_pnl']:,.0f}  "
@@ -136,8 +137,9 @@ def main_india_live_loop():
     UNIVERSE = universe_screener.screen_universe()
     print(f"[Pipeline] Selected {len(UNIVERSE)} tickers from dynamic screening")
 
-    # 2. Groww Executor
-    executor = GrowwExecutor(tickers=UNIVERSE, paper=True)
+    # 2. Broker (auto-selects Zerodha/AngelOne/PaperBroker from env config)
+    broker = get_broker()
+    broker.connect()
 
     # 3. Position manager: close any SL/TP/aged positions FIRST
     print("[Pipeline] Checking position exits (SL/TP/aging)...")
@@ -151,7 +153,7 @@ def main_india_live_loop():
         print(f"[PositionManager] Closed {ticker}")
 
     # 4. Build live portfolio state (uses DB-tracked P&L, not hardcoded)
-    portfolio_state = _get_live_portfolio_state(executor, UNIVERSE, theo_prices)
+    portfolio_state = _get_live_portfolio_state(broker, UNIVERSE, theo_prices)
 
     # 5. Capital allocator: compute intraday vs delivery budgets
     intraday_budget, delivery_budget = capital_allocator.get_budgets(portfolio_state)
@@ -269,20 +271,31 @@ def main_india_live_loop():
         print(f"[CircuitBreaker] TRIGGERED: {cb_reason}. Weights adjusted.")
     print(f"[Pipeline] Safe Weights -> {safe_weights.round(3)}")
 
-    # 11. Fire to execution
-    fills = executor.execute_target_weights(safe_weights, theo_prices)
+    # 11. Fire to execution via broker abstraction layer
+    results = broker.execute_target_weights(
+        tickers=UNIVERSE,
+        target_weights=safe_weights,
+        theoretical_prices=theo_prices,
+        portfolio_value=portfolio_state["portfolio_value"],
+        trade_types=trade_types,
+    )
 
-    # 12. Log positions for CNC trades
+    # 12. Log positions for CNC trades using actual fill prices
     for i, ticker in enumerate(UNIVERSE):
         if trade_types.get(ticker) == "CNC" and safe_weights[i] != 0:
             strategy = initial_state.get("current_strategy", "momentum")
-            qty = int(safe_weights[i] * portfolio_state["portfolio_value"] / theo_prices[ticker])
-            pos = Position.default_cnc(ticker, theo_prices[ticker], qty, strategy)
-            position_manager.open_position(pos)
+            result = results.get(ticker)
+            if result and result.filled_qty > 0:
+                fill_price = result.fill_price if result.fill_price > 0 else theo_prices[ticker]
+                pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy)
+                position_manager.open_position(pos)
 
-    # 13. Metric computations
-    shortfall = executor.calculate_shortfall(safe_weights, theo_prices, fills)
-    print(f"[Pipeline] Trade complete. Estimated Slippage: {shortfall:.2f} bps.")
+    # 13. Metric computations — use actual fill data for shortfall
+    shortfall = broker.calculate_shortfall(UNIVERSE, safe_weights, theo_prices, results)
+    total_commission = sum(r.commission for r in results.values())
+    total_slippage = sum(r.slippage_bps for r in results.values()) / max(len(results), 1)
+    print(f"[Pipeline] Trade complete. Shortfall: {shortfall:.2f} bps, "
+          f"Avg slippage: {total_slippage:.1f} bps, Commission: ₹{total_commission:.2f}")
 
     # 14. Log decision to database
     db_manager.log_decision_orm(

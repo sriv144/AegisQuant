@@ -86,11 +86,34 @@ class UniverseSnapshot(Base):
     created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
 
 class DatabaseSessionManager:
-    """Manages connections to standard SQLite or production Postgres db."""
+    """
+    Manages connections to SQLite (dev) or PostgreSQL (production).
+    PostgreSQL gets connection pooling; SQLite uses NullPool (no concurrent writes).
+    Set POSTGRES_URL env var for production (e.g. postgresql://user:pass@host/aegisquant).
+    """
     def __init__(self):
-        # Default to SQLite, override with POSTGRES_URL in .env if in docker
         self.db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
-        self.engine = create_engine(self.db_url)
+        is_postgres = self.db_url.startswith("postgresql")
+
+        engine_kwargs = {}
+        if is_postgres:
+            # Connection pooling for PostgreSQL
+            engine_kwargs = {
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,  # Recycle connections every 30 min
+                "pool_pre_ping": True,  # Verify connections before use
+            }
+            logger.info(f"[DB] PostgreSQL mode with connection pooling (pool_size=5)")
+        else:
+            # SQLite: no pooling, check_same_thread for multi-thread safety
+            engine_kwargs = {
+                "connect_args": {"check_same_thread": False},
+            }
+            logger.info(f"[DB] SQLite mode: {self.db_url}")
+
+        self.engine = create_engine(self.db_url, **engine_kwargs)
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         
