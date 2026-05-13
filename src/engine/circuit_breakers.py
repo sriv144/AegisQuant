@@ -1,14 +1,21 @@
 """
 Circuit Breakers
 ================
-Hard-coded safety overrides protecting the execution engine from 
+Hard-coded safety overrides protecting the execution engine from
 unbounded RL policy decisions or extreme macro events.
+Supports both US (ET) and India (IST) market timezones.
 """
+import os
 import numpy as np
 from typing import Dict, Any, Tuple
 from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
+ET = timezone(timedelta(hours=-5))  # EST (no DST adjustment — use pytz for production)
+
+# Market configuration
+MARKET = os.getenv("MARKET", "US").upper()
+MARKET_TZ = ET if MARKET == "US" else IST
 
 class MaxPositionRule:
     def __init__(self, max_weight: float = 0.95):
@@ -60,14 +67,18 @@ class VolatilityCircuitBreaker:
 
 
 class TimeWindowRule:
-    def __init__(self, no_trade_before: str = "09:15", no_trade_after: str = "15:25"):
+    def __init__(self, no_trade_before: str = None, no_trade_after: str = None):
+        # US market: 9:30 AM - 3:55 PM ET; India: 9:15 AM - 3:25 PM IST
+        if no_trade_before is None:
+            no_trade_before = "09:30" if MARKET == "US" else "09:15"
+        if no_trade_after is None:
+            no_trade_after = "15:55" if MARKET == "US" else "15:25"
         self.start_fmt = datetime.strptime(no_trade_before, "%H:%M").time()
         self.end_fmt = datetime.strptime(no_trade_after, "%H:%M").time()
 
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """Prevents trading during highly illiquid open/close auctions."""
-        # Note: 'current_weights' must be passed in state to preserve them
-        curr_time = datetime.now(IST).time()
+        curr_time = datetime.now(MARKET_TZ).time()
 
         if curr_time < self.start_fmt or curr_time > self.end_fmt:
             current_weights = state.get("current_weights", np.zeros_like(target_weights))
@@ -118,15 +129,18 @@ class PositionStopLossRule:
 
 
 class MISAutoCloseRule:
-    """Auto-closes MIS positions before 3:10 PM IST to avoid auto-square-off."""
-    def __init__(self, close_time: str = "15:10"):
+    """Auto-closes MIS/day-trade positions before market close to avoid auto-square-off."""
+    def __init__(self, close_time: str = None):
+        # US: close at 3:50 PM ET; India: close at 3:10 PM IST
+        if close_time is None:
+            close_time = "15:50" if MARKET == "US" else "15:10"
         self.close_time_fmt = datetime.strptime(close_time, "%H:%M").time()
 
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """
-        If current time >= 3:10 PM IST and any MIS position exists, close all MIS.
+        If current time >= close_time and any MIS/day-trade position exists, close them.
         """
-        curr_time = datetime.now(IST).time()
+        curr_time = datetime.now(MARKET_TZ).time()
 
         if curr_time >= self.close_time_fmt:
             # Check if any trade_types are MIS

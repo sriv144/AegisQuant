@@ -1,5 +1,6 @@
-// ── AegisQuant Dashboard — Phase 3 ──────────────────────────────────────────
-// WebSocket real-time, Nifty50 benchmark, trade reasoning, JWT auth
+// ── AegisQuant Dashboard — Market-Aware ─────────────────────────────────────
+// WebSocket real-time, benchmark overlay, trade reasoning, JWT auth
+// Supports US (Alpaca) and India (NSE) markets via /api/market-config
 // ─────────────────────────────────────────────────────────────────────────────
 
 let pnlChartInstance = null;
@@ -12,10 +13,21 @@ let ws = null;
 let wsRetryCount = 0;
 const MAX_WS_RETRIES = 10;
 
-const fmt = (v) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(v);
+// ── Market configuration (loaded from backend) ─────────────────────────────
+let MARKET_CFG = {
+    market: 'US',
+    currency_symbol: '$',
+    currency_code: 'USD',
+    locale: 'en-US',
+    timezone: 'America/New_York',
+    benchmark_label: 'S&P 500',
+    default_capital: 100000,
+};
+
+const fmt = (v) => new Intl.NumberFormat(MARKET_CFG.locale, { style: 'currency', currency: MARKET_CFG.currency_code, maximumFractionDigits: 0 }).format(v);
 const fmtPct = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
-const fmtIST = (ts) => {
-    try { return new Date(ts).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+const fmtTime = (ts) => {
+    try { return new Date(ts).toLocaleString(MARKET_CFG.locale, { timeZone: MARKET_CFG.timezone, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
     catch { return ts || '—'; }
 };
 
@@ -114,6 +126,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (e.key === 'Enter') doLogin();
     });
 
+    // Load market configuration first
+    try {
+        const cfg = await fetch('/api/market-config').then(r => r.json());
+        MARKET_CFG = { ...MARKET_CFG, ...cfg };
+        // Update benchmark labels in UI
+        const benchLabel = document.getElementById('benchmark-label');
+        if (benchLabel) benchLabel.textContent = MARKET_CFG.benchmark_label;
+        const benchLegend = document.getElementById('benchmark-label-legend');
+        if (benchLegend) benchLegend.textContent = MARKET_CFG.benchmark_label;
+        // Update chart y-axis currency prefix
+        document.title = `AegisQuant Dashboard (${MARKET_CFG.market})`;
+    } catch { /* use defaults */ }
+
     await checkAuth();
     await fetchAll();
     connectWebSocket();
@@ -190,7 +215,7 @@ function updateLiveKPIs(data) {
 
     document.getElementById('val-drawdown').textContent = ((data.drawdown || 0) * 100).toFixed(2) + '%';
     document.getElementById('val-positions').textContent = data.open_positions || '0';
-    document.getElementById('last-refresh').textContent = 'Live ' + new Date().toLocaleTimeString('en-IN');
+    document.getElementById('last-refresh').textContent = 'Live ' + new Date().toLocaleTimeString(MARKET_CFG.locale);
 }
 
 // ── Data Fetching ────────────────────────────────────────────────────────────
@@ -210,13 +235,13 @@ async function fetchAll() {
         renderPnlChart(portfolioRes.history || [], benchmarkRes.benchmark || []);
         renderLatestRunTable(latestRunRes);
 
-        document.getElementById('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString('en-IN');
+        document.getElementById('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString(MARKET_CFG.locale);
     } catch { /* auth redirect or network error */ }
 }
 
 // ── KPI Cards ────────────────────────────────────────────────────────────────
 function updateKPIs(portfolio, run) {
-    const val = portfolio.current_value || 250000;
+    const val = portfolio.current_value || MARKET_CFG.default_capital;
     const pnl = portfolio.total_pnl || 0;
     const dd = (portfolio.drawdown || 0) * 100;
     const s = run.summary || {};
@@ -241,7 +266,7 @@ function updateKPIs(portfolio, run) {
     document.getElementById('val-net-exp').textContent = s.net_exposure_pct != null ? `Net: ${s.net_exposure_pct}%` : '—';
 
     if (run.timestamp) {
-        document.getElementById('val-last-run').textContent = fmtIST(run.timestamp);
+        document.getElementById('val-last-run').textContent = fmtTime(run.timestamp);
         document.getElementById('val-model').textContent = run.model_version || '—';
     }
 }
@@ -252,7 +277,7 @@ function renderPnlChart(history, benchmark) {
 
     let labels, data;
     if (history.length <= 1) {
-        const base = history.length === 1 ? history[0].total_portfolio_value : 250000;
+        const base = history.length === 1 ? history[0].total_portfolio_value : MARKET_CFG.default_capital;
         labels = ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Today'];
         data = [base, base, base, base, base, base];
     } else {
@@ -283,7 +308,7 @@ function renderPnlChart(history, benchmark) {
             tension: 0.4,
         },
         {
-            label: 'Nifty 50',
+            label: MARKET_CFG.benchmark_label,
             data: benchData,
             borderColor: '#5b8def',
             backgroundColor: 'transparent',
@@ -318,7 +343,7 @@ function renderPnlChart(history, benchmark) {
                 x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
                 y: {
                     grid: { color: 'rgba(255,255,255,0.04)' },
-                    ticks: { callback: v => '₹' + (v / 1000).toFixed(0) + 'k' }
+                    ticks: { callback: v => MARKET_CFG.currency_symbol + (v / 1000).toFixed(0) + 'k' }
                 }
             },
             interaction: { mode: 'nearest', axis: 'x', intersect: false }
@@ -343,7 +368,7 @@ function renderLatestRunTable(data) {
     const tbody = document.getElementById('latest-run-body');
 
     if (!data || !data.positions) return;
-    if (data.timestamp) tsEl.textContent = '— ' + fmtIST(data.timestamp);
+    if (data.timestamp) tsEl.textContent = '— ' + fmtTime(data.timestamp);
 
     const s = data.summary || {};
     summaryEl.innerHTML = [
@@ -369,10 +394,10 @@ function renderLatestRunTable(data) {
 
         tbody.insertAdjacentHTML('beforeend', `
             <tr class="clickable-row" onclick="showReasoningModal('${pos.ticker}', ${JSON.stringify(reasoning).replace(/'/g, "&#39;").replace(/"/g, '&quot;')})">
-                <td class="symbol-cell">${pos.ticker.replace('.NS', '')}</td>
+                <td class="symbol-cell">${pos.ticker.replace('.NS', '').replace('.BO', '')}</td>
                 <td><span class="badge ${isLong ? 'badge-long' : 'badge-short'}">${pos.direction}</span></td>
                 <td class="${isLong ? 'text-success' : 'text-danger'}">${fmtPct(pos.weight_pct)}</td>
-                <td>${fmt(pos.rupees)}</td>
+                <td>${fmt((pos.capital || pos.rupees))}</td>
                 <td class="dim reasoning-cell" title="${rationale}">${shortRationale || '—'}</td>
             </tr>`);
     });
@@ -395,7 +420,7 @@ window.showReasoningModal = function(ticker, reasoning) {
         <div class="reasoning-modal-overlay" onclick="this.remove()">
             <div class="reasoning-modal" onclick="event.stopPropagation()">
                 <div class="table-header-row">
-                    <h2>Trade Reasoning: ${ticker.replace('.NS', '')}</h2>
+                    <h2>Trade Reasoning: ${ticker.replace('.NS', '').replace('.BO', '')}</h2>
                     <button class="close-btn" onclick="this.closest('.reasoning-modal-overlay').remove()">&#10005;</button>
                 </div>
                 <div class="reasoning-section">
@@ -478,7 +503,7 @@ function renderExposureDonut() {
 
 function renderHoldingsBar() {
     const positions = [...allPositions].sort((a, b) => Math.abs(b.weight_pct) - Math.abs(a.weight_pct)).slice(0, 12);
-    const labels = positions.map(p => p.ticker.replace('.NS', ''));
+    const labels = positions.map(p => p.ticker.replace('.NS', '').replace('.BO', ''));
     const data = positions.map(p => p.weight_pct);
     const colors = data.map(v => v >= 0 ? '#00d09c' : '#ff5252');
 
@@ -514,11 +539,11 @@ function renderFullPositionsTable(filter) {
         const strategy = pos.reasoning?.trade_type || '';
         tbody.insertAdjacentHTML('beforeend', `
             <tr class="clickable-row" onclick="showReasoningModal('${pos.ticker}', ${JSON.stringify(pos.reasoning || {}).replace(/'/g, "&#39;").replace(/"/g, '&quot;')})">
-                <td class="symbol-cell">${pos.ticker.replace('.NS', '')}</td>
+                <td class="symbol-cell">${pos.ticker.replace('.NS', '').replace('.BO', '')}</td>
                 <td><span class="badge ${isLong ? 'badge-long' : 'badge-short'}">${pos.direction}</span></td>
                 <td class="${isLong ? 'text-success' : 'text-danger'}">${fmtPct(pos.weight_pct)}</td>
-                <td>${fmt(pos.rupees)}</td>
-                <td class="dim">${pos.last_price ? '₹' + pos.last_price.toLocaleString('en-IN') : '—'}</td>
+                <td>${fmt((pos.capital || pos.rupees))}</td>
+                <td class="dim">${pos.last_price ? fmt(pos.last_price) : '—'}</td>
                 <td class="dim">${pos.est_shares ?? '—'}</td>
                 <td class="dim">${strategy}</td>
             </tr>`);
@@ -546,10 +571,10 @@ async function renderTradesPage() {
 
             tbody.insertAdjacentHTML('beforeend', `
                 <tr>
-                    <td class="symbol-cell">${t.ticker.replace('.NS', '')}</td>
+                    <td class="symbol-cell">${t.ticker.replace('.NS', '').replace('.BO', '')}</td>
                     <td class="dim">${t.strategy || '—'}</td>
-                    <td>₹${t.entry_price.toLocaleString('en-IN')}</td>
-                    <td>₹${t.exit_price.toLocaleString('en-IN')}</td>
+                    <td>${fmt(t.entry_price)}</td>
+                    <td>${fmt(t.exit_price)}</td>
                     <td>${t.quantity}</td>
                     <td class="${pnlClass}">${pnlSign}${(t.pnl_pct * 100).toFixed(2)}%</td>
                     <td class="${pnlClass}">${pnlSign}${fmt(t.realized_pnl)}</td>
@@ -584,7 +609,7 @@ function renderDecisionsPage() {
         const tr = document.createElement('tr');
         tr.classList.add('clickable-row');
         tr.innerHTML = `
-            <td>${fmtIST(dec.timestamp)}</td>
+            <td>${fmtTime(dec.timestamp)}</td>
             <td class="text-success" style="font-size:0.82rem">${dec.model_version}</td>
             <td>${tickers.length || weights.length}</td>
             <td class="text-success">${longs}</td>
@@ -605,7 +630,7 @@ function renderDecisionsPage() {
 function openDecisionDetail(dec) {
     const card = document.getElementById('decision-detail-card');
     const body = document.getElementById('detail-body');
-    document.getElementById('detail-title').textContent = `Decision — ${fmtIST(dec.timestamp)}`;
+    document.getElementById('detail-title').textContent = `Decision — ${fmtTime(dec.timestamp)}`;
 
     const weights = Array.isArray(dec.final_weights) ? dec.final_weights : [];
     const tickers = Array.isArray(dec.ticker_universe) ? dec.ticker_universe : [];
@@ -622,7 +647,7 @@ function openDecisionDetail(dec) {
         const shortRationale = rationale.length > 60 ? rationale.substring(0, 60) + '…' : rationale;
 
         rows += `<tr class="clickable-row" onclick="showReasoningModal('${ticker}', ${JSON.stringify(r).replace(/'/g, "&#39;").replace(/"/g, '&quot;')})">
-            <td class="symbol-cell">${ticker.replace('.NS', '')}</td>
+            <td class="symbol-cell">${ticker.replace('.NS', '').replace('.BO', '')}</td>
             <td><span class="badge ${isLong ? 'badge-long' : 'badge-short'}">${isLong ? 'LONG' : 'SHORT'}</span></td>
             <td class="${isLong ? 'text-success' : 'text-danger'}">${fmtPct(w * 100)}</td>
             <td class="dim">${shortRationale || '—'}</td>

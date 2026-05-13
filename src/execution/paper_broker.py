@@ -5,14 +5,14 @@ Simulates order execution with:
   - Slippage modeling (volume-dependent + random noise)
   - Partial fill probability (large orders may not fill completely)
   - Market impact (square-root model from cost_model.py)
-  - NSE transaction costs (STT, brokerage, GST, stamp duty, exchange fees)
+  - Market-aware transaction costs (US = commission-free, India = NSE fees)
   - Order latency simulation
   - Fill price jitter based on volatility
 
-This replaces the old "mock mode" which just returned theoretical prices.
-Now paper P&L actually reflects realistic execution friction.
+Supports both US and Indian markets via the `market` parameter.
 """
 
+import os
 import time
 import math
 import random
@@ -31,41 +31,55 @@ logger = logging.getLogger(__name__)
 
 
 # ── NSE Transaction Costs (as of 2024-25) ────────────────────────────────────
-# All rates are per-side (per trade)
 NSE_COSTS = {
     "CNC": {
-        "brokerage_pct": 0.0,        # Most discount brokers: zero for delivery
-        "stt_buy_pct": 0.001,        # 0.1% on buy (delivery)
-        "stt_sell_pct": 0.001,       # 0.1% on sell (delivery)
-        "exchange_pct": 0.0000345,   # NSE transaction charge
-        "gst_on_brokerage_pct": 0.18,  # 18% GST on brokerage + exchange charges
-        "sebi_pct": 0.000001,        # SEBI turnover fee
-        "stamp_duty_buy_pct": 0.00015,  # Stamp duty on buy (0.015%)
-    },
-    "MIS": {
-        "brokerage_flat": 20.0,      # ₹20 per executed order (Zerodha-style)
-        "stt_sell_pct": 0.00025,     # 0.025% on sell only (intraday)
+        "brokerage_pct": 0.0,
+        "stt_buy_pct": 0.001,
+        "stt_sell_pct": 0.001,
         "exchange_pct": 0.0000345,
         "gst_on_brokerage_pct": 0.18,
         "sebi_pct": 0.000001,
-        "stamp_duty_buy_pct": 0.00003,  # 0.003% stamp duty (intraday)
+        "stamp_duty_buy_pct": 0.00015,
+    },
+    "MIS": {
+        "brokerage_flat": 20.0,
+        "stt_sell_pct": 0.00025,
+        "exchange_pct": 0.0000345,
+        "gst_on_brokerage_pct": 0.18,
+        "sebi_pct": 0.000001,
+        "stamp_duty_buy_pct": 0.00003,
+    },
+}
+
+# ── US Transaction Costs (Alpaca / most US brokers) ──────────────────────────
+# Commission-free for equities. Only SEC & FINRA fees apply (negligible).
+US_COSTS = {
+    "CNC": {
+        "sec_fee_per_dollar_sold": 0.0000278,  # SEC fee ~$27.80 per $1M sold
+        "finra_taf_per_share_sold": 0.000166,  # FINRA TAF ~$0.000166/share sold
+    },
+    "MIS": {
+        "sec_fee_per_dollar_sold": 0.0000278,
+        "finra_taf_per_share_sold": 0.000166,
     },
 }
 
 
 class PaperBroker(BaseBroker):
     """
-    Simulates realistic NSE execution for paper trading.
+    Simulates realistic execution for paper trading.
+    Supports US (commission-free) and India (NSE fees) markets.
     Tracks positions, P&L, and order history internally.
     """
 
     def __init__(
         self,
-        initial_capital: float = 250_000.0,
+        initial_capital: float = 100_000.0,
         slippage_model: str = "realistic",  # "none", "fixed", "realistic"
         fixed_slippage_bps: float = 5.0,     # Used when slippage_model="fixed"
         fill_rate: float = 0.95,             # Probability of full fill (0.0 to 1.0)
         latency_ms: int = 0,                 # Simulated latency (0 = instant)
+        market: str = "US",                  # "US" or "IN" — determines cost model
     ):
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -73,6 +87,7 @@ class PaperBroker(BaseBroker):
         self.fixed_slippage_bps = fixed_slippage_bps
         self.fill_rate = fill_rate
         self.latency_ms = latency_ms
+        self.market = market.upper()
 
         self._positions: Dict[str, dict] = {}  # ticker -> {qty, avg_price, side}
         self._order_history: List[dict] = []
@@ -81,7 +96,8 @@ class PaperBroker(BaseBroker):
 
     def connect(self) -> bool:
         self._connected = True
-        logger.info(f"[PaperBroker] Connected. Capital: ₹{self.initial_capital:,.0f}")
+        currency = "$" if self.market == "US" else "₹"
+        logger.info(f"[PaperBroker] Connected ({self.market} market). Capital: {currency}{self.initial_capital:,.0f}")
         return True
 
     def get_ltp(self, ticker: str) -> float:
@@ -142,7 +158,7 @@ class PaperBroker(BaseBroker):
 
         # ── Transaction Costs ─────────────────────────────────────────────
         notional = fill_price * filled_qty
-        commission = self._compute_transaction_costs(notional, order.side, order.product)
+        commission = self._compute_transaction_costs(notional, order.side, order.product, qty=filled_qty)
 
         # ── Update Internal State ─────────────────────────────────────────
         if order.side == OrderSide.BUY:
@@ -191,10 +207,11 @@ class PaperBroker(BaseBroker):
         })
 
         action = "BUY" if order.side == OrderSide.BUY else "SELL"
+        currency = "$" if self.market == "US" else "₹"
         logger.info(
             f"[PaperBroker] {action} {filled_qty}x {order.ticker} "
-            f"@ ₹{fill_price:.2f} (theo: ₹{theo_price:.2f}, slip: {slippage_bps:.1f}bps, "
-            f"cost: ₹{commission:.2f})"
+            f"@ {currency}{fill_price:.2f} (theo: {currency}{theo_price:.2f}, slip: {slippage_bps:.1f}bps, "
+            f"cost: {currency}{commission:.2f})"
         )
 
         return result
@@ -219,13 +236,16 @@ class PaperBroker(BaseBroker):
                 return theo_price - slip
 
         # ── Realistic model ───────────────────────────────────────────────
-        # 1. Bid-ask spread: assume 3-8 bps for liquid NSE stocks
-        spread_bps = random.uniform(3.0, 8.0)
+        # 1. Bid-ask spread: US stocks are tighter (1-3 bps) vs India (3-8 bps)
+        if self.market == "US":
+            spread_bps = random.uniform(1.0, 3.0)  # US large caps very tight
+        else:
+            spread_bps = random.uniform(3.0, 8.0)   # NSE mid/large caps
         half_spread = theo_price * (spread_bps / 10000) / 2
 
         # 2. Market impact: sqrt model — larger orders have more impact
-        #    Assume ADV ≈ ₹5Cr for a mid-cap NSE stock
-        adv_rupees = 50_000_000.0
+        #    US: ADV ~$50M for mid-cap, India: ADV ~₹5Cr for mid-cap
+        adv_rupees = 50_000_000.0 if self.market == "US" else 50_000_000.0
         notional = theo_price * order.quantity
         participation = notional / adv_rupees if adv_rupees > 0 else 0.0
         impact = 0.1 * math.sqrt(max(participation, 0)) * theo_price
@@ -246,42 +266,61 @@ class PaperBroker(BaseBroker):
         return round(fill_price, 2)
 
     def _compute_transaction_costs(
-        self, notional: float, side: OrderSide, product: ProductType
+        self, notional: float, side: OrderSide, product: ProductType,
+        qty: int = 0,
     ) -> float:
         """
-        Compute NSE transaction costs (STT + brokerage + GST + exchange + SEBI + stamp duty).
+        Compute transaction costs based on market:
+        - US: Commission-free (only SEC + FINRA fees on sells, negligible)
+        - India: NSE costs (STT + brokerage + GST + exchange + SEBI + stamp duty)
         """
+        if self.market == "US":
+            return self._compute_us_costs(notional, side, product, qty)
+        else:
+            return self._compute_india_costs(notional, side, product)
+
+    def _compute_us_costs(
+        self, notional: float, side: OrderSide, product: ProductType,
+        qty: int = 0,
+    ) -> float:
+        """US transaction costs: SEC fee + FINRA TAF (sell-side only, negligible)."""
+        product_key = "MIS" if product == ProductType.MIS else "CNC"
+        rates = US_COSTS[product_key]
+        costs = 0.0
+
+        if side == OrderSide.SELL:
+            # SEC fee on sell notional
+            costs += notional * rates["sec_fee_per_dollar_sold"]
+            # FINRA TAF per share sold
+            costs += qty * rates["finra_taf_per_share_sold"]
+
+        return round(costs, 4)
+
+    def _compute_india_costs(
+        self, notional: float, side: OrderSide, product: ProductType,
+    ) -> float:
+        """India/NSE transaction costs (STT + brokerage + GST + exchange + SEBI + stamp duty)."""
         product_key = "MIS" if product == ProductType.MIS else "CNC"
         rates = NSE_COSTS[product_key]
-
         costs = 0.0
 
         if product_key == "MIS":
-            # Flat brokerage
             costs += rates["brokerage_flat"]
-            # STT on sell only for intraday
             if side == OrderSide.SELL:
                 costs += notional * rates["stt_sell_pct"]
-            # Stamp duty on buy only
             if side == OrderSide.BUY:
                 costs += notional * rates["stamp_duty_buy_pct"]
         else:
-            # CNC: zero brokerage, STT on both sides
             if side == OrderSide.BUY:
                 costs += notional * rates["stt_buy_pct"]
                 costs += notional * rates["stamp_duty_buy_pct"]
             else:
                 costs += notional * rates["stt_sell_pct"]
 
-        # Exchange transaction charges
         exchange_charge = notional * rates["exchange_pct"]
         costs += exchange_charge
-
-        # GST on brokerage + exchange charges
         brokerage_for_gst = rates.get("brokerage_flat", 0.0)
         costs += (brokerage_for_gst + exchange_charge) * rates["gst_on_brokerage_pct"]
-
-        # SEBI turnover fee
         costs += notional * rates["sebi_pct"]
 
         return round(costs, 2)
@@ -308,8 +347,8 @@ class PaperBroker(BaseBroker):
             if abs(weight) < 0.001 or price <= 0:
                 continue
 
-            target_rupees = portfolio_value * abs(weight)
-            qty = max(1, int(target_rupees / price))
+            target_notional = portfolio_value * abs(weight)
+            qty = max(1, int(target_notional / price))
             side = OrderSide.BUY if weight > 0 else OrderSide.SELL
 
             try:

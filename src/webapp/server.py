@@ -1,12 +1,13 @@
 """
 AegisQuant Web Dashboard — FastAPI Backend
 ===========================================
-Phase 3 features:
+Features:
   - WebSocket real-time push (/ws/live) with HTTP polling fallback
-  - Nifty50 benchmark overlay (/api/benchmark)
+  - Market-aware benchmark overlay (/api/benchmark) — S&P 500 (US) or Nifty 50 (India)
   - JWT authentication (/api/auth/login, token-gated routes)
   - Per-trade P&L lifecycle (/api/positions/detailed, /api/trades/closed)
   - Trade reasoning drill-down (/api/decisions/{id}/reasoning)
+  - Market configuration via MARKET env var (US or IN)
 """
 
 import os
@@ -25,6 +26,13 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import create_engine, text
 import pandas as pd
+
+# ── Market configuration ────────────────────────────────────────────────────
+MARKET = os.getenv("MARKET", "US").upper()
+BENCHMARK_SYMBOL = "^GSPC" if MARKET == "US" else "^NSEI"
+BENCHMARK_LABEL = "S&P 500" if MARKET == "US" else "Nifty 50"
+CURRENCY_SYMBOL = "$" if MARKET == "US" else "₹"
+DEFAULT_CAPITAL = 100_000.0 if MARKET == "US" else DEFAULT_CAPITAL
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +124,20 @@ def auth_status():
     return {"auth_enabled": bool(_AUTH_PASSWORD)}
 
 
+@app.get("/api/market-config")
+def market_config():
+    """Return market configuration for frontend rendering."""
+    return {
+        "market": MARKET,
+        "currency_symbol": CURRENCY_SYMBOL,
+        "currency_code": "USD" if MARKET == "US" else "INR",
+        "locale": "en-US" if MARKET == "US" else "en-IN",
+        "timezone": "America/New_York" if MARKET == "US" else "Asia/Kolkata",
+        "benchmark_label": BENCHMARK_LABEL,
+        "default_capital": DEFAULT_CAPITAL,
+    }
+
+
 # ── WebSocket real-time push ─────────────────────────────────────────────────
 class ConnectionManager:
     """Manages active WebSocket connections and broadcasts updates."""
@@ -190,7 +212,7 @@ def _build_live_snapshot() -> dict:
                 "SELECT timestamp, circuit_breaker_status FROM decisions ORDER BY id DESC LIMIT 1"
             )).fetchone()
 
-        pv = float(pv_row[1]) if pv_row else 250_000.0
+        pv = float(pv_row[1]) if pv_row else DEFAULT_CAPITAL
         dd = float(pv_row[2]) if pv_row else 0.0
         pnl = float(pv_row[3]) if pv_row else 0.0
 
@@ -240,8 +262,8 @@ def get_portfolio(_auth=Depends(require_auth)):
 @app.get("/api/benchmark")
 def get_benchmark(_auth=Depends(require_auth)):
     """
-    Return Nifty50 normalized performance to overlay on portfolio chart.
-    Fetches ^NSEI data for the same date range as daily_pnl.
+    Return benchmark normalized performance to overlay on portfolio chart.
+    US: S&P 500 (^GSPC), India: Nifty 50 (^NSEI).
     """
     try:
         engine = get_engine()
@@ -251,10 +273,9 @@ def get_benchmark(_auth=Depends(require_auth)):
             )).fetchone()
 
         if not dates or not dates[0]:
-            return {"benchmark": [], "label": "Nifty 50"}
+            return {"benchmark": [], "label": BENCHMARK_LABEL}
 
         start_date, end_date = dates
-        # Add buffer days
         try:
             from datetime import datetime as dt
             start = (dt.fromisoformat(start_date) - timedelta(days=5)).strftime("%Y-%m-%d")
@@ -263,22 +284,20 @@ def get_benchmark(_auth=Depends(require_auth)):
             start, end = start_date, end_date
 
         import yfinance as yf
-        nifty = yf.download("^NSEI", start=start, end=end, auto_adjust=True, progress=False)
-        if nifty.empty:
-            return {"benchmark": [], "label": "Nifty 50"}
+        bench_data = yf.download(BENCHMARK_SYMBOL, start=start, end=end, auto_adjust=True, progress=False)
+        if bench_data.empty:
+            return {"benchmark": [], "label": BENCHMARK_LABEL}
 
-        close = nifty["Close"]
+        close = bench_data["Close"]
         if hasattr(close, "columns"):
             close = close.iloc[:, 0]
 
-        # Get initial portfolio value to normalize benchmark to same scale
         with engine.connect() as conn:
             init_row = conn.execute(text(
                 "SELECT total_portfolio_value FROM daily_pnl ORDER BY date ASC LIMIT 1"
             )).fetchone()
-        initial_pv = float(init_row[0]) if init_row else 250_000.0
+        initial_pv = float(init_row[0]) if init_row else DEFAULT_CAPITAL
 
-        # Normalize: benchmark_value = initial_pv * (nifty_today / nifty_first)
         first_close = float(close.iloc[0])
         records = []
         for date, val in close.items():
@@ -286,10 +305,10 @@ def get_benchmark(_auth=Depends(require_auth)):
             normalized = initial_pv * (float(val) / first_close)
             records.append({"date": date_str, "value": round(normalized, 2)})
 
-        return {"benchmark": records, "label": "Nifty 50 (normalized)"}
+        return {"benchmark": records, "label": f"{BENCHMARK_LABEL} (normalized)"}
     except Exception as e:
         logger.error(f"get_benchmark: {e}")
-        return {"benchmark": [], "label": "Nifty 50", "error": str(e)}
+        return {"benchmark": [], "label": BENCHMARK_LABEL, "error": str(e)}
 
 
 # ── Positions API ────────────────────────────────────────────────────────────
@@ -460,7 +479,7 @@ def get_latest_run(_auth=Depends(require_auth)):
         pv_query = text("SELECT total_portfolio_value FROM daily_pnl ORDER BY date DESC LIMIT 1")
         with engine.connect() as conn:
             pv_row = conn.execute(pv_query).fetchone()
-        portfolio_value = float(pv_row[0]) if pv_row else 250_000.0
+        portfolio_value = float(pv_row[0]) if pv_row else DEFAULT_CAPITAL
 
         latest_prices = {}
         try:
@@ -483,14 +502,15 @@ def get_latest_run(_auth=Depends(require_auth)):
             if abs(w) < 0.001:
                 continue
             direction = "LONG" if w > 0 else "SHORT"
-            rupees = abs(w) * portfolio_value
+            capital_alloc = abs(w) * portfolio_value
             price = latest_prices.get(ticker)
-            est_shares = int(rupees / price) if price and price > 0 else None
+            est_shares = int(capital_alloc / price) if price and price > 0 else None
             positions.append({
                 "ticker": ticker,
                 "weight_pct": round(w * 100, 2),
                 "direction": direction,
-                "rupees": round(rupees, 0),
+                "capital": round(capital_alloc, 0),
+                "rupees": round(capital_alloc, 0),  # backward compat
                 "last_price": round(price, 2) if price else None,
                 "est_shares": est_shares,
                 "reasoning": reasoning.get(ticker, {}),

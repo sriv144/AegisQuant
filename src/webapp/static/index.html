@@ -83,10 +83,10 @@
 
                     <div class="chart-container span-full">
                         <div class="chart-header">
-                            <h2>Portfolio Value vs Nifty 50</h2>
+                            <h2>Portfolio Value vs <span id="benchmark-label">S&amp;P 500</span></h2>
                             <div class="chart-legend">
                                 <span class="leg-item"><span class="leg-dot" style="background:#00d09c"></span>Portfolio</span>
-                                <span class="leg-item"><span class="leg-dot" style="background:#5b8def"></span>Nifty 50</span>
+                                <span class="leg-item"><span class="leg-dot" style="background:#5b8def"></span><span id="benchmark-label-legend">S&amp;P 500</span></span>
                             </div>
                         </div>
                         <canvas id="pnlChart"></canvas>
@@ -200,7 +200,7 @@
                         <h2>Decision History</h2>
                         <table class="modern-table">
                             <thead><tr>
-                                <th>Timestamp (IST)</th>
+                                <th>Timestamp</th>
                                 <th>Model</th>
                                 <th>Universe</th>
                                 <th>Longs</th>

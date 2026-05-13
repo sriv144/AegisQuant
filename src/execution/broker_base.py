@@ -1,12 +1,12 @@
 """
 Broker Abstraction Layer
 ========================
-Defines the interface that ALL brokers (Zerodha, Angel One, Groww, paper sim) must implement.
-Plug in any Indian broker by subclassing BaseBroker.
+Defines the interface that ALL brokers must implement.
+Supports US (Alpaca) and Indian (Zerodha, Angel One) markets.
 
 Usage:
     from src.execution.broker_base import BaseBroker
-    class ZerodhaBroker(BaseBroker): ...
+    class AlpacaBroker(BaseBroker): ...
 """
 
 from abc import ABC, abstractmethod
@@ -129,8 +129,8 @@ class BaseBroker(ABC):
             if abs(weight) < 0.001 or price <= 0:
                 continue
 
-            target_rupees = portfolio_value * abs(weight)
-            qty = max(1, int(target_rupees / price))
+            target_notional = portfolio_value * abs(weight)
+            qty = max(1, int(target_notional / price))
             side = OrderSide.BUY if weight > 0 else OrderSide.SELL
 
             try:

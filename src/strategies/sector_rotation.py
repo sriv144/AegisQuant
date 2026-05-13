@@ -4,14 +4,45 @@ Sector Rotation Strategy
 Rotates into sectors favored by the current macro regime (VIX level + momentum).
 Growth sectors in low-VIX; defensive sectors in high-VIX. Uses per-stock
 momentum + sentiment to pick the best within each sector.
+
+Supports both US and India markets via MARKET env var.
 """
 
+import os
 from typing import Dict, Any
 from src.strategies.base_strategy import BaseStrategy
 from src.agents.base_agent import BaseAgent
 
+_MARKET = os.getenv("MARKET", "US").upper()
 
-SECTOR_REGIME = {
+# ── US Sector Regime ─────────────────────────────────────────────────────────
+SECTOR_REGIME_US = {
+    "growth": {
+        "tickers": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "CRM",
+                     "ADBE", "AMD", "NOW", "PANW", "SNPS"],
+        "favored_when": "low_vix",
+    },
+    "cyclical": {
+        "tickers": ["CAT", "BA", "HON", "DE", "GE", "UNP", "TSLA"],
+        "favored_when": "low_vix",
+    },
+    "defensive": {
+        "tickers": ["PG", "KO", "PEP", "JNJ", "WMT", "MCD", "CL",
+                     "MRK", "ABBV", "UNH"],
+        "favored_when": "high_vix",
+    },
+    "energy": {
+        "tickers": ["XOM", "CVX", "COP", "SLB", "EOG"],
+        "favored_when": "neutral",
+    },
+    "finance": {
+        "tickers": ["JPM", "BAC", "GS", "MS", "BRK-B", "V", "MA"],
+        "favored_when": "neutral",
+    },
+}
+
+# ── India Sector Regime ──────────────────────────────────────────────────────
+SECTOR_REGIME_IN = {
     "growth": {
         "tickers": ["INFY", "TCS", "WIPRO", "HCLTECH", "TECHM",
                      "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK",
@@ -37,6 +68,8 @@ SECTOR_REGIME = {
     },
 }
 
+SECTOR_REGIME = SECTOR_REGIME_US if _MARKET == "US" else SECTOR_REGIME_IN
+
 
 def _get_sector(ticker_sym: str):
     for sector, info in SECTOR_REGIME.items():
@@ -57,7 +90,7 @@ class SectorRotationStrategy(BaseStrategy, BaseAgent):
         portfolio_state: Dict[str, Any],
         alt_data: Dict[str, Any],
     ) -> Dict[str, Any]:
-        ticker_sym = ticker.replace(".NS", "").replace(".BO", "")
+        ticker_sym = ticker.replace(".NS", "").replace(".BO", "").replace(".US", "")
         vix_raw = portfolio_state.get("vix_raw", 20.0)
         sentiment = alt_data.get("sentiment", 0.0)
         mom_z = indicators.get("mom_12m_Z", 0.0)

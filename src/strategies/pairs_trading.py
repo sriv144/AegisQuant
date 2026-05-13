@@ -4,14 +4,37 @@ Pairs Trading Strategy
 Relative-value mean reversion within sector peer groups. Trades stocks that
 deviate from their sector's average RSI/momentum. Works across all stocks in
 the universe, not just hardcoded pairs.
+
+Supports US and India markets via MARKET env var.
 """
 
+import os
 from typing import Dict, Any
 from src.strategies.base_strategy import BaseStrategy
 from src.agents.base_agent import BaseAgent
 
+_MARKET = os.getenv("MARKET", "US").upper()
 
-SECTOR_MAP = {
+# ── US Sector Map ────────────────────────────────────────────────────────────
+SECTOR_MAP_US = {
+    "XOM": "energy", "CVX": "energy", "COP": "energy", "SLB": "energy", "EOG": "energy",
+    "JPM": "banking", "BAC": "banking", "GS": "banking", "MS": "banking",
+    "WFC": "banking", "C": "banking", "SCHW": "banking",
+    "AAPL": "tech", "MSFT": "tech", "GOOGL": "tech", "META": "tech",
+    "NVDA": "tech", "AMD": "tech", "INTC": "tech", "CRM": "tech", "ADBE": "tech",
+    "PG": "consumer", "KO": "consumer", "PEP": "consumer", "WMT": "consumer",
+    "COST": "consumer", "MCD": "consumer", "NKE": "consumer",
+    "BA": "industrial", "CAT": "industrial", "HON": "industrial", "GE": "industrial",
+    "UNH": "healthcare", "JNJ": "healthcare", "PFE": "healthcare",
+    "ABBV": "healthcare", "LLY": "healthcare", "MRK": "healthcare",
+    "V": "fintech", "MA": "fintech", "AXP": "fintech", "SQ": "fintech",
+    "DIS": "media", "NFLX": "media", "CMCSA": "media",
+    "T": "telecom", "VZ": "telecom", "TMUS": "telecom",
+    "TSLA": "auto", "F": "auto", "GM": "auto",
+}
+
+# ── India Sector Map ─────────────────────────────────────────────────────────
+SECTOR_MAP_IN = {
     "RELIANCE": "energy", "ONGC": "energy", "BPCL": "energy",
     "HDFCBANK": "banking", "ICICIBANK": "banking", "KOTAKBANK": "banking",
     "SBIN": "banking", "AXISBANK": "banking", "INDUSINDBK": "banking",
@@ -23,6 +46,8 @@ SECTOR_MAP = {
     "TATAMOTORS": "auto", "MARUTI": "auto", "M&M": "auto",
     "BAJFINANCE": "nbfc", "BAJAJFINSV": "nbfc",
 }
+
+SECTOR_MAP = SECTOR_MAP_US if _MARKET == "US" else SECTOR_MAP_IN
 
 
 class PairsTradingStrategy(BaseStrategy, BaseAgent):
@@ -37,7 +62,7 @@ class PairsTradingStrategy(BaseStrategy, BaseAgent):
         portfolio_state: Dict[str, Any],
         alt_data: Dict[str, Any],
     ) -> Dict[str, Any]:
-        ticker_sym = ticker.replace(".NS", "").replace(".BO", "")
+        ticker_sym = ticker.replace(".NS", "").replace(".BO", "").replace(".US", "")
         rsi_z = indicators.get("RSI_14_Z", 0.0)
         bb_pos = indicators.get("BB_Position_Z", 0.0)
         mom_z = indicators.get("mom_12m_Z", 0.0)
