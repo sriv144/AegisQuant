@@ -1,13 +1,15 @@
 """
 train_rl.py
 ===========
-Train the PPO portfolio manager.  Supports two modes:
+Train the PPO portfolio manager.  Default mode uses curriculum training on
+real historical data (Nifty50).  Use --synthetic for the old random-noise env.
 
-  Standard training (synthetic env):
+  Default (curriculum on real data):
       python train_rl.py
+      python train_rl.py --ticker ^NSEI --timesteps 80000
 
-  Curriculum training on real historical data (SPY or any ticker):
-      python train_rl.py --curriculum --ticker SPY --timesteps 60000
+  Synthetic env (for debugging only):
+      python train_rl.py --synthetic
 
 Curriculum learning stages:
   Stage 1 (25% timesteps): last 2 years  — agent learns basic direction trading
@@ -203,24 +205,26 @@ def curriculum_train(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AegisQuant PPO Trainer")
     parser.add_argument(
-        "--curriculum", action="store_true",
-        help="Use 3-stage curriculum training on real historical data"
+        "--synthetic", action="store_true",
+        help="Use synthetic random env (debugging only — does NOT produce a useful model)"
     )
-    parser.add_argument("--ticker", default="SPY", help="Asset ticker for curriculum mode")
-    parser.add_argument("--timesteps", type=int, default=60_000,
-                        help="Total training timesteps (curriculum) or 50k default (standard)")
+    parser.add_argument("--ticker", default="^NSEI",
+                        help="Asset ticker for curriculum mode (default: Nifty50)")
+    parser.add_argument("--timesteps", type=int, default=80_000,
+                        help="Total training timesteps")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--history-start", default="2015-01-01",
                         help="Earliest date for curriculum data fetch")
     args = parser.parse_args()
 
-    if args.curriculum:
+    if args.synthetic:
+        print("[WARNING] Training on synthetic random data — model will NOT learn real market patterns")
+        train_agent(seed=args.seed)
+        evaluate_agent(seed=args.seed)
+    else:
         curriculum_train(
             ticker=args.ticker,
             total_timesteps=args.timesteps,
             seed=args.seed,
             history_start=args.history_start,
         )
-    else:
-        train_agent(seed=args.seed)
-        evaluate_agent(seed=args.seed)

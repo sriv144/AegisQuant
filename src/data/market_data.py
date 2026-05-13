@@ -1,6 +1,7 @@
 import os
 import random
 import logging
+import time
 from typing import Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 
@@ -9,6 +10,10 @@ import pandas as pd
 from src import config  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+CACHE_TTL_SECONDS = 900  # 15 minutes
+MAX_RETRIES = 2
+RETRY_BACKOFF = 1.5  # seconds, doubles each retry
 
 
 class MarketDataCollector:
@@ -26,6 +31,7 @@ class MarketDataCollector:
 
     def __init__(self):
         self.mock_mode = os.getenv("ENABLE_MOCK_DATA", "True").lower() == "true"
+        self._cache: Dict[str, Tuple[float, Any]] = {}  # key → (expiry_ts, data)
 
     # ------------------------------------------------------------------
     # Public API
@@ -43,16 +49,32 @@ class MarketDataCollector:
         )
 
     def get_latest_quote(self, ticker: str) -> float:
-        """Returns the most recent close price (or a mock value in mock mode)."""
+        """Returns the most recent close price (cached for 15 min)."""
         if self.mock_mode:
             base_prices = {"AAPL": 150.0, "BTC": 60000.0, "ETH": 3000.0, "SPY": 500.0}
             base = base_prices.get(ticker, 100.0)
             return round(base * (1 + random.uniform(-0.01, 0.01)), 2)
 
+        cache_key = f"quote:{ticker}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
         data = self.get_historical_data(ticker, interval="1d")
         if data:
-            return data[-1]["close"]
+            price = data[-1]["close"]
+            self._set_cached(cache_key, price)
+            return price
         return 100.0
+
+    def _get_cached(self, key: str):
+        entry = self._cache.get(key)
+        if entry and time.time() < entry[0]:
+            return entry[1]
+        return None
+
+    def _set_cached(self, key: str, data, ttl: float = CACHE_TTL_SECONDS):
+        self._cache[key] = (time.time() + ttl, data)
 
     def get_historical_data(
         self,
@@ -63,57 +85,65 @@ class MarketDataCollector:
     ) -> List[Dict[str, Any]]:
         """
         Fetch OHLCV bars for *ticker* between *start_date* and *end_date*.
-
-        Returns a list of dicts with keys:
-            timestamp, ticker, open, high, low, close, volume
-
-        Falls back to mock random-walk data if:
-        - ENABLE_MOCK_DATA=True, OR
-        - yfinance is unavailable / the download fails.
+        Results are cached for 15 minutes to avoid rate-limiting.
         """
         if self.mock_mode:
             return self._generate_mock_price_data(ticker, start_date, end_date)
 
-        try:
-            import yfinance as yf
+        cache_key = f"hist:{ticker}:{start_date}:{end_date}:{interval}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
 
-            kwargs: Dict[str, Any] = {"auto_adjust": True, "progress": False}
-            if start_date:
-                kwargs["start"] = start_date
-            if end_date:
-                kwargs["end"] = end_date
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                import yfinance as yf
 
-            df = yf.download(ticker, interval=interval, **kwargs)
+                kwargs: Dict[str, Any] = {"auto_adjust": True, "progress": False}
+                if start_date:
+                    kwargs["start"] = start_date
+                if end_date:
+                    kwargs["end"] = end_date
 
-            if df.empty:
-                logger.warning("yfinance returned empty DataFrame for %s — using mock", ticker)
-                return self._generate_mock_price_data(ticker, start_date, end_date)
+                df = yf.download(ticker, interval=interval, **kwargs)
 
-            # Flatten MultiIndex columns that yfinance sometimes produces
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [col[0].lower() for col in df.columns]
-            else:
-                df.columns = [c.lower() for c in df.columns]
+                if df.empty:
+                    logger.warning("yfinance returned empty DataFrame for %s — using mock", ticker)
+                    return self._generate_mock_price_data(ticker, start_date, end_date)
 
-            df.index.name = "timestamp"
-            df = df.reset_index()
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [col[0].lower() for col in df.columns]
+                else:
+                    df.columns = [c.lower() for c in df.columns]
 
-            records = []
-            for _, row in df.iterrows():
-                records.append({
-                    "timestamp": str(row["timestamp"]),
-                    "ticker": ticker,
-                    "open": round(float(row.get("open", 0)), 4),
-                    "high": round(float(row.get("high", 0)), 4),
-                    "low": round(float(row.get("low", 0)), 4),
-                    "close": round(float(row.get("close", 0)), 4),
-                    "volume": round(float(row.get("volume", 0)), 2),
-                })
-            return records
+                df.index.name = "timestamp"
+                df = df.reset_index()
 
-        except Exception as exc:
-            logger.warning("yfinance fetch failed for %s (%s) — falling back to mock", ticker, exc)
-            return self._generate_mock_price_data(ticker, start_date, end_date)
+                records = []
+                for _, row in df.iterrows():
+                    records.append({
+                        "timestamp": str(row["timestamp"]),
+                        "ticker": ticker,
+                        "open": round(float(row.get("open", 0)), 4),
+                        "high": round(float(row.get("high", 0)), 4),
+                        "low": round(float(row.get("low", 0)), 4),
+                        "close": round(float(row.get("close", 0)), 4),
+                        "volume": round(float(row.get("volume", 0)), 2),
+                    })
+
+                self._set_cached(cache_key, records)
+                return records
+
+            except Exception as exc:
+                if attempt < MAX_RETRIES:
+                    wait = RETRY_BACKOFF * (2 ** attempt)
+                    logger.warning("yfinance fetch failed for %s (attempt %d/%d, retrying in %.1fs): %s",
+                                   ticker, attempt + 1, MAX_RETRIES + 1, wait, exc)
+                    time.sleep(wait)
+                else:
+                    logger.warning("yfinance fetch failed for %s after %d attempts — falling back to mock",
+                                   ticker, MAX_RETRIES + 1)
+                    return self._generate_mock_price_data(ticker, start_date, end_date)
 
     def get_macro_data(self, start_date: str = "2015-01-01") -> pd.DataFrame:
         """

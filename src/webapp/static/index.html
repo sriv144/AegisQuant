@@ -9,7 +9,19 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="app-container">
+    <!-- ── LOGIN OVERLAY ── -->
+    <div id="login-overlay" class="login-overlay" style="display:none">
+        <div class="login-card">
+            <div class="logo-icon" style="margin:0 auto 16px;width:48px;height:48px;border-radius:12px"></div>
+            <h2>AegisQuant</h2>
+            <p style="color:var(--text-secondary);margin-bottom:24px">Enter your dashboard password</p>
+            <input type="password" id="login-password" placeholder="Password" class="login-input" autofocus>
+            <button id="login-btn" class="login-btn">Sign In</button>
+            <p id="login-error" class="login-error" style="display:none">Invalid password</p>
+        </div>
+    </div>
+
+    <div class="app-container" id="app-container">
         <aside class="sidebar">
             <div class="logo-area">
                 <div class="logo-icon"></div>
@@ -18,9 +30,11 @@
             <nav class="nav-menu">
                 <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
                 <a href="#" class="nav-item" data-page="positions">Positions</a>
+                <a href="#" class="nav-item" data-page="trades">Trade History</a>
                 <a href="#" class="nav-item" data-page="decisions">Decisions</a>
             </nav>
             <div class="sidebar-footer">
+                <div id="ws-status" class="ws-badge ws-disconnected">WS Disconnected</div>
                 <div class="mode-badge" id="mode-badge">Paper Mode</div>
             </div>
         </aside>
@@ -38,12 +52,12 @@
                 <div class="dashboard-grid">
                     <div class="metric-card">
                         <h3>Portfolio Value</h3>
-                        <div class="value" id="val-portfolio">₹—</div>
-                        <div class="subtext" id="val-pnl">—</div>
+                        <div class="value" id="val-portfolio">&#8377;&mdash;</div>
+                        <div class="subtext" id="val-pnl">&mdash;</div>
                     </div>
                     <div class="metric-card">
                         <h3>Total P&amp;L</h3>
-                        <div class="value" id="val-total-pnl">₹—</div>
+                        <div class="value" id="val-total-pnl">&#8377;&mdash;</div>
                         <div class="subtext">Since inception</div>
                     </div>
                     <div class="metric-card">
@@ -53,30 +67,34 @@
                     </div>
                     <div class="metric-card">
                         <h3>Active Positions</h3>
-                        <div class="value" id="val-positions">—</div>
-                        <div class="subtext" id="val-exposure">—</div>
+                        <div class="value" id="val-positions">&mdash;</div>
+                        <div class="subtext" id="val-exposure">&mdash;</div>
                     </div>
                     <div class="metric-card">
                         <h3>Gross Exposure</h3>
-                        <div class="value" id="val-gross">—</div>
-                        <div class="subtext" id="val-net-exp">Net: —</div>
+                        <div class="value" id="val-gross">&mdash;</div>
+                        <div class="subtext" id="val-net-exp">Net: &mdash;</div>
                     </div>
                     <div class="metric-card">
                         <h3>Last Run</h3>
-                        <div class="value" style="font-size:0.95rem;line-height:1.4" id="val-last-run">—</div>
-                        <div class="subtext" id="val-model">—</div>
+                        <div class="value" style="font-size:0.95rem;line-height:1.4" id="val-last-run">&mdash;</div>
+                        <div class="subtext" id="val-model">&mdash;</div>
                     </div>
 
                     <div class="chart-container span-full">
                         <div class="chart-header">
-                            <h2>Portfolio Value Over Time</h2>
+                            <h2>Portfolio Value vs <span id="benchmark-label">S&amp;P 500</span></h2>
+                            <div class="chart-legend">
+                                <span class="leg-item"><span class="leg-dot" style="background:#00d09c"></span>Portfolio</span>
+                                <span class="leg-item"><span class="leg-dot" style="background:#5b8def"></span><span id="benchmark-label-legend">S&amp;P 500</span></span>
+                            </div>
                         </div>
                         <canvas id="pnlChart"></canvas>
                     </div>
 
                     <div class="data-table-container span-full">
                         <div class="table-header-row">
-                            <h2>Latest Run — Agent Positions
+                            <h2>Latest Run &mdash; Agent Positions
                                 <span id="run-timestamp" class="dim-label"></span>
                             </h2>
                             <div id="run-summary" class="run-summary-pills"></div>
@@ -87,9 +105,10 @@
                                 <th>Direction</th>
                                 <th>Weight</th>
                                 <th>Capital Allocated</th>
+                                <th>Reasoning</th>
                             </tr></thead>
                             <tbody id="latest-run-body">
-                                <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+                                <tr><td colspan="5" class="empty-state">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -102,27 +121,21 @@
                     <h1>Positions</h1>
                     <div class="user-profile"><span class="status-indicator"></span> Live data</div>
                 </header>
-
                 <div class="section-grid">
-                    <!-- Exposure donut -->
-                    <div class="card half-card">
-                        <h2>Exposure Breakdown</h2>
-                        <div class="donut-wrap">
-                            <canvas id="exposureChart"></canvas>
+                    <div class="row-2">
+                        <div class="card half-card">
+                            <h2>Exposure Breakdown</h2>
+                            <div class="donut-wrap"><canvas id="exposureChart"></canvas></div>
+                            <div id="exposure-legend" class="legend-row"></div>
                         </div>
-                        <div id="exposure-legend" class="legend-row"></div>
+                        <div class="card half-card">
+                            <h2>Holdings by Weight</h2>
+                            <canvas id="holdingsBar"></canvas>
+                        </div>
                     </div>
-
-                    <!-- Sector breakdown bar -->
-                    <div class="card half-card">
-                        <h2>Holdings by Weight</h2>
-                        <canvas id="holdingsBar"></canvas>
-                    </div>
-
-                    <!-- Full positions table -->
                     <div class="card full-card">
                         <div class="table-header-row">
-                            <h2>All Positions</h2>
+                            <h2>Open Positions (Detailed)</h2>
                             <div class="filter-row">
                                 <button class="filter-btn active" data-filter="all">All</button>
                                 <button class="filter-btn" data-filter="LONG">Long</button>
@@ -134,13 +147,44 @@
                                 <th>Symbol</th>
                                 <th>Direction</th>
                                 <th>Weight</th>
-                                <th>Capital (₹)</th>
+                                <th>Capital</th>
                                 <th>Last Price</th>
-                                <th>Est. Shares*</th>
+                                <th>Est. Shares</th>
+                                <th>Strategy</th>
                             </tr></thead>
                             <tbody id="positions-full-body"></tbody>
                         </table>
-                        <p class="footnote">* Paper mode — no real orders placed on Groww. Est. shares = capital ÷ last price (yfinance).</p>
+                        <p class="footnote">* Paper mode. Est. shares = capital / last price (yfinance).</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── PAGE: TRADE HISTORY ── -->
+            <div id="page-trades" class="page">
+                <header class="topbar">
+                    <h1>Trade History</h1>
+                    <div class="user-profile"><span class="status-indicator"></span> Closed trades</div>
+                </header>
+                <div class="section-grid">
+                    <div class="card full-card">
+                        <h2>Closed Trades</h2>
+                        <table class="modern-table">
+                            <thead><tr>
+                                <th>Symbol</th>
+                                <th>Strategy</th>
+                                <th>Entry</th>
+                                <th>Exit</th>
+                                <th>Qty</th>
+                                <th>P&amp;L %</th>
+                                <th>Realized P&amp;L</th>
+                                <th>Exit Reason</th>
+                                <th>Entry Date</th>
+                                <th>Exit Date</th>
+                            </tr></thead>
+                            <tbody id="trades-body">
+                                <tr><td colspan="10" class="empty-state">Loading...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -151,14 +195,12 @@
                     <h1>AI Decisions</h1>
                     <div class="user-profile"><span class="status-indicator"></span> Agent log</div>
                 </header>
-
                 <div class="section-grid">
-                    <!-- Decision history table -->
                     <div class="card full-card">
                         <h2>Decision History</h2>
                         <table class="modern-table">
                             <thead><tr>
-                                <th>Timestamp (IST)</th>
+                                <th>Timestamp</th>
                                 <th>Model</th>
                                 <th>Universe</th>
                                 <th>Longs</th>
@@ -171,11 +213,10 @@
                         </table>
                     </div>
 
-                    <!-- Expanded decision detail panel -->
                     <div class="card full-card" id="decision-detail-card" style="display:none">
                         <div class="table-header-row">
                             <h2 id="detail-title">Decision Detail</h2>
-                            <button class="close-btn" id="close-detail">✕ Close</button>
+                            <button class="close-btn" id="close-detail">&#10005; Close</button>
                         </div>
                         <div id="detail-body"></div>
                     </div>

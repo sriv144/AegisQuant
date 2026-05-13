@@ -1,13 +1,26 @@
 """
-India Live Trading Loop (Professional Multi-Mode Trader)
-========================================================
-Runs the dynamic multi-strategy RL pipeline on NSE/BSE with Angel One SmartAPI.
-- Dynamic universe screening (all ~2000+ NSE stocks)
-- Dual-mode trading: 80% delivery (CNC, 1-3 month) + 20% intraday (MIS, same-day)
+US Live Trading Loop (Professional Multi-Mode Trader)
+======================================================
+Runs the dynamic multi-strategy RL pipeline on US markets with Alpaca.
+- Dynamic universe screening (S&P 500 + growth stocks)
+- Dual-mode trading: 80% swing (GTC) + 20% intraday (DAY orders)
 - Position management with stop-loss, take-profit, and aging exits
-- RL meta-learner for optimal intraday/delivery split
-Scheduled for 9:15 AM IST (03:45 UTC) on weekdays.
+- RL meta-learner for optimal intraday/swing split
+Scheduled for 9:35 AM ET (market open + 5 min) on weekdays.
+
+Set these env vars:
+  MARKET=US
+  BROKER=alpaca  (or 'paper' for simulation)
+  ALPACA_API_KEY=...
+  ALPACA_SECRET_KEY=...
+  ALPACA_BASE_URL=https://paper-api.alpaca.markets  (paper trading)
+  INITIAL_CAPITAL=100000  (default $100K for US paper)
 """
+
+import os
+
+# Force US market mode before any imports
+os.environ.setdefault("MARKET", "US")
 
 from datetime import datetime, timezone, timedelta
 import numpy as np
@@ -16,10 +29,10 @@ import pandas as pd
 from src import config  # noqa: F401  # Ensures .env is loaded
 from src.execution import get_broker
 from src.execution.broker_base import BaseBroker
-from src.data.india_market_data import india_market_data
+from src.data.us_market_data import us_market_data
 from src.data.feature_engineering import feature_engineer
 from src.data.alternative_data import alt_data as alt_data_collector
-from src.data.universe_screener import universe_screener
+from src.data.us_universe_screener import us_universe_screener
 from src.engine.circuit_breakers import ExecutionFailsafe
 from src.engine.position_manager import position_manager, Position
 from src.engine.capital_allocator import capital_allocator
@@ -30,12 +43,12 @@ from src.db.models import db_manager
 
 _failsafe = ExecutionFailsafe()
 
-INITIAL_CAPITAL = 250_000.0  # ₹2.5 lakh paper capital — the single source of truth
+INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))  # $100K USD paper capital
 
 
-def _fetch_india_vix() -> float:
-    """Fetch latest India VIX from yfinance. Returns 20.0 on any failure."""
-    return india_market_data.get_india_vix()
+def _fetch_vix() -> float:
+    """Fetch latest CBOE VIX from yfinance. Returns 20.0 on any failure."""
+    return us_market_data.get_vix()
 
 
 def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices: dict) -> dict:
@@ -43,7 +56,7 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
     Compute real portfolio state from DB-tracked positions and realized P&L.
     No more hardcoded values — portfolio_value changes as trades win/lose.
     """
-    vix = _fetch_india_vix()
+    vix = _fetch_vix()
     current_weights = np.zeros(len(tickers))
 
     pf = db_manager.compute_portfolio_value(INITIAL_CAPITAL, current_prices)
@@ -52,11 +65,11 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
 
     mode_label = broker.__class__.__name__
     print(
-        f"[LiveState] {mode_label} mode — portfolio_value=₹{portfolio_value:,.0f}  "
-        f"realized=₹{pf['realized_pnl']:,.0f}  unrealized=₹{pf['unrealized_pnl']:,.0f}  "
-        f"cash=₹{pf['cash_balance']:,.0f}  positions={pf['open_position_count']}"
+        f"[LiveState] {mode_label} mode — portfolio_value=${portfolio_value:,.0f}  "
+        f"realized=${pf['realized_pnl']:,.0f}  unrealized=${pf['unrealized_pnl']:,.0f}  "
+        f"cash=${pf['cash_balance']:,.0f}  positions={pf['open_position_count']}"
     )
-    print(f"[LiveState] drawdown={drawdown:.4f}  india_vix={vix:.2f}  peak=₹{pf['peak_equity']:,.0f}")
+    print(f"[LiveState] drawdown={drawdown:.4f}  VIX={vix:.2f}  peak=${pf['peak_equity']:,.0f}")
 
     return {
         "current_drawdown": drawdown,
@@ -69,13 +82,9 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
 def _fetch_weekly_strategy_scores() -> dict:
     """
     Compute per-strategy performance scores from realized trades in the last 30 days.
-    Returns {strategy_name: score} where score is avg P&L % weighted by trade count.
-    Strategies with no recent trades get a neutral score of 0.0.
     """
     try:
         from sqlalchemy import text
-        import os
-
         db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
         from sqlalchemy import create_engine
         engine = create_engine(db_url)
@@ -115,7 +124,7 @@ def _fetch_weekly_strategy_scores() -> dict:
 
 
 def _default_strategy_scores() -> dict:
-    """Fallback scores when no trade history exists — equal weight across core strategies."""
+    """Fallback scores — equal weight across core strategies."""
     return {
         "momentum": 0.0,
         "mean_reversion": 0.0,
@@ -129,15 +138,15 @@ def _default_strategy_scores() -> dict:
     }
 
 
-def main_india_live_loop():
-    print(f"\n[{datetime.now()}] [India Pipeline] Waking up. Initiating daily RL execution cycle...")
+def main_us_live_loop():
+    print(f"\n[{datetime.now()}] [US Pipeline] Waking up. Initiating daily RL execution cycle...")
 
-    # 1. Refresh universe (max once per 7 days)
+    # 1. Refresh universe
     print("[Pipeline] Screening universe...")
-    UNIVERSE = universe_screener.screen_universe()
+    UNIVERSE = us_universe_screener.screen_universe()
     print(f"[Pipeline] Selected {len(UNIVERSE)} tickers from dynamic screening")
 
-    # 2. Broker (auto-selects Zerodha/AngelOne/PaperBroker from env config)
+    # 2. Broker (auto-selects Alpaca/PaperBroker from env config)
     broker = get_broker()
     broker.connect()
 
@@ -145,19 +154,19 @@ def main_india_live_loop():
     print("[Pipeline] Checking position exits (SL/TP/aging)...")
     theo_prices = {}
     for tick in UNIVERSE:
-        theo_prices[tick] = india_market_data.get_latest_quote(tick)
+        theo_prices[tick] = us_market_data.get_latest_quote(tick)
 
     exits = position_manager.daily_check(theo_prices)
     for ticker in exits:
         position_manager.close_position(ticker, theo_prices[ticker], reason="EXIT_SIGNAL")
         print(f"[PositionManager] Closed {ticker}")
 
-    # 4. Build live portfolio state (uses DB-tracked P&L, not hardcoded)
+    # 4. Build live portfolio state (uses DB-tracked P&L)
     portfolio_state = _get_live_portfolio_state(broker, UNIVERSE, theo_prices)
 
-    # 5. Capital allocator: compute intraday vs delivery budgets
+    # 5. Capital allocator: compute intraday vs swing budgets
     intraday_budget, delivery_budget = capital_allocator.get_budgets(portfolio_state)
-    print(f"[CapitalAllocator] Budgets: {intraday_budget:.0f} intraday, {delivery_budget:.0f} delivery")
+    print(f"[CapitalAllocator] Budgets: ${intraday_budget:,.0f} intraday, ${delivery_budget:,.0f} swing")
 
     # 6. Pre-compute technical indicators + sentiment
     print("[Pipeline] Pre-computing technical indicators and sentiment signals...")
@@ -167,7 +176,7 @@ def main_india_live_loop():
     hist_end = datetime.now().strftime("%Y-%m-%d")
 
     for ticker in UNIVERSE:
-        hist = india_market_data.get_historical_data(ticker, start_date=hist_start, end_date=hist_end)
+        hist = us_market_data.get_historical_data(ticker, start_date=hist_start, end_date=hist_end)
         if hist and len(hist) >= 20:
             df_feat = feature_engineer.compute_technical_indicators(hist)
             latest = df_feat.iloc[-1]
@@ -191,7 +200,7 @@ def main_india_live_loop():
     target_weights = np.zeros(len(UNIVERSE))
     trade_types = {}
     trade_reasoning_map = {}
-    model_version = "india_orchestrator_fallback"
+    model_version = "us_orchestrator_fallback"
 
     for i, ticker in enumerate(UNIVERSE):
         initial_state: AgentState = {
@@ -218,18 +227,13 @@ def main_india_live_loop():
         final_state = orchestrator.run_cycle(initial_state)
 
         allocation = final_state.get("allocation_request", {})
-        # asset_allocation_agent writes adjusted_exposure_pct; PM writes target_exposure_pct
         exposure = float(allocation.get("adjusted_exposure_pct") or allocation.get("target_exposure_pct") or 0.0)
-        # Use committee direction (set by LLM) — rl_direction from PM can be unreliable
-        # if the RL model is degenerate (always outputs the same sign).
         committee_dir = final_state.get("committee_decision", {}).get("direction", "LONG")
         target_weights[i] = exposure if committee_dir != "SHORT" else -exposure
 
-        # Extract trade_type from execution result
         trade_type = final_state.get("trade_type", "SKIP")
         trade_types[ticker] = trade_type
 
-        # Capture trade reasoning from every agent in the pipeline
         signals = final_state.get("research_signals", [])
         committee = final_state.get("committee_decision", {})
         risk = final_state.get("risk_approval", {})
@@ -248,7 +252,7 @@ def main_india_live_loop():
             print(f"  [{ticker}] {trade_type} @ {exposure*100:.1f}%")
 
     if pm_agent.rl_model is not None:
-        model_version = "india_ppo_rl_live"
+        model_version = "us_ppo_rl_live"
 
     # 9. Normalize to gross exposure constraint (1.5)
     gross = np.sum(np.abs(target_weights))
@@ -280,7 +284,7 @@ def main_india_live_loop():
         trade_types=trade_types,
     )
 
-    # 12. Log positions for CNC trades using actual fill prices
+    # 12. Log positions for swing trades using actual fill prices
     for i, ticker in enumerate(UNIVERSE):
         if trade_types.get(ticker) == "CNC" and safe_weights[i] != 0:
             strategy = initial_state.get("current_strategy", "momentum")
@@ -290,12 +294,12 @@ def main_india_live_loop():
                 pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy)
                 position_manager.open_position(pos)
 
-    # 13. Metric computations — use actual fill data for shortfall
+    # 13. Metric computations
     shortfall = broker.calculate_shortfall(UNIVERSE, safe_weights, theo_prices, results)
     total_commission = sum(r.commission for r in results.values())
     total_slippage = sum(r.slippage_bps for r in results.values()) / max(len(results), 1)
     print(f"[Pipeline] Trade complete. Shortfall: {shortfall:.2f} bps, "
-          f"Avg slippage: {total_slippage:.1f} bps, Commission: ₹{total_commission:.2f}")
+          f"Avg slippage: {total_slippage:.1f} bps, Commission: ${total_commission:.2f}")
 
     # 14. Log decision to database
     db_manager.log_decision_orm(
@@ -310,13 +314,12 @@ def main_india_live_loop():
         trade_reasoning=trade_reasoning_map,
     )
 
-    # 15. Log daily P&L (uses real tracked portfolio value, not hardcoded)
+    # 15. Log daily P&L
     try:
         daily_pnl = position_manager.get_daily_pnl()
         from src.db.models import DailyPnL
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        import os
 
         db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
         engine = create_engine(db_url)
@@ -362,34 +365,34 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.now:
-        main_india_live_loop()
+        main_us_live_loop()
     else:
-        print("Starting APScheduler Daemon (India)...")
-        print("AegisQuant India is armed. Pipeline runs every 20 minutes from 09:15 to 15:25 IST (Mon-Fri).")
+        print("Starting APScheduler Daemon (US Markets)...")
+        print("AegisQuant US is armed. Pipeline runs every 20 minutes from 09:35 to 15:50 ET (Mon-Fri).")
         from apscheduler.schedulers.blocking import BlockingScheduler
 
         scheduler = BlockingScheduler()
 
-        # Run every 20 minutes during NSE market hours (09:15 – 15:05 IST)
-        # Fires: :15, :35, :55 each hour from 9 to 14, then 15:05 as last run before close
+        # Run every 20 minutes during US market hours (9:35 AM – 3:40 PM ET)
+        # Fires: :35, :55, :15 each hour from 9 to 14, then 15:35 as last run
         scheduler.add_job(
-            main_india_live_loop,
+            main_us_live_loop,
             'cron',
             day_of_week='mon-fri',
             hour='9-14',
-            minute='15,35,55',
-            timezone='Asia/Kolkata',
-            max_instances=1,        # prevent overlap if a run takes >20 min
-            coalesce=True,          # skip missed fires instead of stacking them
+            minute='35,55,15',
+            timezone='US/Eastern',
+            max_instances=1,
+            coalesce=True,
         )
-        # Final fire at 15:05 — last decision before 15:25 market close auction
+        # Final fire at 15:35 — last decision before 4:00 PM close
         scheduler.add_job(
-            main_india_live_loop,
+            main_us_live_loop,
             'cron',
             day_of_week='mon-fri',
             hour=15,
-            minute=5,
-            timezone='Asia/Kolkata',
+            minute=35,
+            timezone='US/Eastern',
             max_instances=1,
             coalesce=True,
         )

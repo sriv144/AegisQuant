@@ -31,6 +31,7 @@ class DecisionRecord(Base):
     final_weights = Column(Text, default="[]")
     transaction_costs = Column(Float, default=0.0)
     model_version = Column(String, default="unknown")
+    trade_reasoning = Column(Text, default="{}")
 
 
 class OpenPosition(Base):
@@ -85,11 +86,34 @@ class UniverseSnapshot(Base):
     created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
 
 class DatabaseSessionManager:
-    """Manages connections to standard SQLite or production Postgres db."""
+    """
+    Manages connections to SQLite (dev) or PostgreSQL (production).
+    PostgreSQL gets connection pooling; SQLite uses NullPool (no concurrent writes).
+    Set POSTGRES_URL env var for production (e.g. postgresql://user:pass@host/aegisquant).
+    """
     def __init__(self):
-        # Default to SQLite, override with POSTGRES_URL in .env if in docker
         self.db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
-        self.engine = create_engine(self.db_url)
+        is_postgres = self.db_url.startswith("postgresql")
+
+        engine_kwargs = {}
+        if is_postgres:
+            # Connection pooling for PostgreSQL
+            engine_kwargs = {
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,  # Recycle connections every 30 min
+                "pool_pre_ping": True,  # Verify connections before use
+            }
+            logger.info(f"[DB] PostgreSQL mode with connection pooling (pool_size=5)")
+        else:
+            # SQLite: no pooling, check_same_thread for multi-thread safety
+            engine_kwargs = {
+                "connect_args": {"check_same_thread": False},
+            }
+            logger.info(f"[DB] SQLite mode: {self.db_url}")
+
+        self.engine = create_engine(self.db_url, **engine_kwargs)
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         
@@ -97,7 +121,7 @@ class DatabaseSessionManager:
         """Alternative ORM hook replacing raw parameterized queries."""
         try:
             # Convert arrays to JSON strings for compatibility across DB types without JSONB
-            for k in ["ticker_universe", "state_vector", "rl_output", "final_weights"]:
+            for k in ["ticker_universe", "state_vector", "rl_output", "final_weights", "trade_reasoning"]:
                 if k in kwargs and not isinstance(kwargs[k], str):
                     if hasattr(kwargs[k], "tolist"):
                         kwargs[k] = json.dumps(kwargs[k].tolist())
@@ -111,5 +135,69 @@ class DatabaseSessionManager:
                 
         except Exception as e:
             logger.error(f"SQLAlchemy Insert Failed: {e}")
+
+    def compute_portfolio_value(self, initial_capital: float, current_prices: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Compute real portfolio value from DB-tracked positions.
+
+        Returns dict with: portfolio_value, realized_pnl, unrealized_pnl,
+        cash_balance, peak_equity, current_drawdown.
+        """
+        try:
+            with self.SessionLocal() as session:
+                closed = session.query(OpenPosition).filter(
+                    OpenPosition.status == "CLOSED",
+                    OpenPosition.pnl_pct.isnot(None),
+                ).all()
+                realized_pnl = sum(
+                    (p.exit_price - p.entry_price) * p.quantity
+                    for p in closed
+                    if p.exit_price is not None
+                )
+
+                open_pos = session.query(OpenPosition).filter(
+                    OpenPosition.status == "OPEN"
+                ).all()
+                invested = sum(p.entry_price * p.quantity for p in open_pos)
+                market_value = sum(
+                    current_prices.get(p.ticker, p.entry_price) * p.quantity
+                    for p in open_pos
+                )
+                unrealized_pnl = market_value - invested
+
+                cash_balance = initial_capital + realized_pnl - invested
+                portfolio_value = cash_balance + market_value
+
+                rows = session.query(DailyPnL.total_portfolio_value).order_by(
+                    DailyPnL.date.desc()
+                ).limit(500).all()
+                historical_peak = max((r[0] for r in rows), default=initial_capital)
+                peak_equity = max(portfolio_value, historical_peak, initial_capital)
+
+                drawdown = max(0.0, (peak_equity - portfolio_value) / peak_equity) if peak_equity > 0 else 0.0
+
+                return {
+                    "portfolio_value": round(portfolio_value, 2),
+                    "realized_pnl": round(realized_pnl, 2),
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "cash_balance": round(cash_balance, 2),
+                    "peak_equity": round(peak_equity, 2),
+                    "current_drawdown": round(drawdown, 6),
+                    "open_position_count": len(open_pos),
+                    "closed_trade_count": len(closed),
+                }
+        except Exception as e:
+            logger.error(f"compute_portfolio_value failed: {e}")
+            return {
+                "portfolio_value": initial_capital,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "cash_balance": initial_capital,
+                "peak_equity": initial_capital,
+                "current_drawdown": 0.0,
+                "open_position_count": 0,
+                "closed_trade_count": 0,
+            }
+
 
 db_manager = DatabaseSessionManager()
