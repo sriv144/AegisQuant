@@ -58,9 +58,23 @@ class FeatureEngineer:
         df["Daily_Return"] = df["close"].pct_change()
         df["Volatility_20"] = df["Daily_Return"].rolling(window=20).std()
 
+        # ---- 12-month momentum (rate of change) ----
+        df["mom_12m"] = df["close"].pct_change(periods=min(252, len(df) - 1)) if len(df) > 20 else 0.0
+
+        # ---- ADX (Average Directional Index, 14-period) for trend strength ----
+        df["ADX_14"] = self._compute_adx(df, period=14)
+
+        # ---- ATR (Average True Range, 14-period) for volatility sizing ----
+        high_low = df["high"] - df["low"]
+        high_close = (df["high"] - df["close"].shift(1)).abs()
+        low_close = (df["low"] - df["close"].shift(1)).abs()
+        df["ATR_14"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+
+        # ---- Volume z-score (unusual volume detection) ----
+        df["Volume_Z"] = self._rolling_zscore(df["volume"].astype(float), window=63)
+
         # ---- Rolling Z-score normalization (63-day window) ----
-        # Prevents look-ahead bias that global normalization introduces.
-        for col in ("RSI_14", "MACD", "Volatility_20", "BB_Position"):
+        for col in ("RSI_14", "MACD", "Volatility_20", "BB_Position", "mom_12m"):
             if col in df.columns:
                 df[f"{col}_Z"] = self._rolling_zscore(df[col], window=63)
 
@@ -87,13 +101,27 @@ class FeatureEngineer:
 
     @staticmethod
     def _rolling_zscore(series: pd.Series, window: int = 63) -> pd.Series:
-        """
-        Compute a rolling z-score using only past data (no look-ahead).
-        Returns NaN for the first `window` rows.
-        """
         mean = series.rolling(window).mean()
         std = series.rolling(window).std().replace(0, np.nan)
         return (series - mean) / std
+
+    @staticmethod
+    def _compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+        plus_dm = df["high"].diff()
+        minus_dm = -df["low"].diff()
+        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+
+        atr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift(1)).abs(),
+            (df["low"] - df["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1).rolling(period).mean()
+
+        plus_di = 100 * (plus_dm.rolling(period).mean() / atr.replace(0, np.nan))
+        minus_di = 100 * (minus_dm.rolling(period).mean() / atr.replace(0, np.nan))
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+        return dx.rolling(period).mean()
 
 
 # Singleton

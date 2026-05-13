@@ -188,6 +188,7 @@ def main_india_live_loop():
     print("[Pipeline] Running LLM consensus + PPO inference via agent orchestrator...")
     target_weights = np.zeros(len(UNIVERSE))
     trade_types = {}
+    trade_reasoning_map = {}
     model_version = "india_orchestrator_fallback"
 
     for i, ticker in enumerate(UNIVERSE):
@@ -225,6 +226,21 @@ def main_india_live_loop():
         # Extract trade_type from execution result
         trade_type = final_state.get("trade_type", "SKIP")
         trade_types[ticker] = trade_type
+
+        # Capture trade reasoning from every agent in the pipeline
+        signals = final_state.get("research_signals", [])
+        committee = final_state.get("committee_decision", {})
+        risk = final_state.get("risk_approval", {})
+        trade_reasoning_map[ticker] = {
+            "research_signals": [
+                {"agent": s.get("agent_name", "unknown"), "action": s.get("action", ""), "rationale": s.get("rationale", "")}
+                for s in signals
+            ],
+            "committee": {"action": committee.get("action", ""), "direction": committee.get("direction", ""), "rationale": committee.get("rationale", "")},
+            "allocation": {"exposure_pct": exposure, "rationale": allocation.get("rationale", "")},
+            "risk": {"action": risk.get("action", ""), "rationale": risk.get("rationale", "")},
+            "trade_type": trade_type,
+        }
 
         if trade_type != "SKIP":
             print(f"  [{ticker}] {trade_type} @ {exposure*100:.1f}%")
@@ -278,6 +294,7 @@ def main_india_live_loop():
         final_weights=safe_weights,
         transaction_costs=shortfall,
         model_version=model_version,
+        trade_reasoning=trade_reasoning_map,
     )
 
     # 15. Log daily P&L (uses real tracked portfolio value, not hardcoded)

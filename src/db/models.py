@@ -31,6 +31,7 @@ class DecisionRecord(Base):
     final_weights = Column(Text, default="[]")
     transaction_costs = Column(Float, default=0.0)
     model_version = Column(String, default="unknown")
+    trade_reasoning = Column(Text, default="{}")
 
 
 class OpenPosition(Base):
@@ -97,7 +98,7 @@ class DatabaseSessionManager:
         """Alternative ORM hook replacing raw parameterized queries."""
         try:
             # Convert arrays to JSON strings for compatibility across DB types without JSONB
-            for k in ["ticker_universe", "state_vector", "rl_output", "final_weights"]:
+            for k in ["ticker_universe", "state_vector", "rl_output", "final_weights", "trade_reasoning"]:
                 if k in kwargs and not isinstance(kwargs[k], str):
                     if hasattr(kwargs[k], "tolist"):
                         kwargs[k] = json.dumps(kwargs[k].tolist())

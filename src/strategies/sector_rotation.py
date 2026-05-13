@@ -1,18 +1,53 @@
 """
 Sector Rotation Strategy
-=======================
-Rotate into outperforming sectors monthly.
-LLM reads macro signals (RBI policy, monsoon, oil prices).
+========================
+Rotates into sectors favored by the current macro regime (VIX level + momentum).
+Growth sectors in low-VIX; defensive sectors in high-VIX. Uses per-stock
+momentum + sentiment to pick the best within each sector.
 """
 
-import numpy as np
 from typing import Dict, Any
 from src.strategies.base_strategy import BaseStrategy
 from src.agents.base_agent import BaseAgent
 
+
+SECTOR_REGIME = {
+    "growth": {
+        "tickers": ["INFY", "TCS", "WIPRO", "HCLTECH", "TECHM",
+                     "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK",
+                     "BAJFINANCE", "BAJAJFINSV"],
+        "favored_when": "low_vix",
+    },
+    "cyclical": {
+        "tickers": ["LT", "ADANIENT", "ULTRACEMCO", "TATAMOTORS", "MARUTI", "M&M"],
+        "favored_when": "low_vix",
+    },
+    "defensive": {
+        "tickers": ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA",
+                     "SUNPHARMA", "DRREDDY", "CIPLA"],
+        "favored_when": "high_vix",
+    },
+    "energy": {
+        "tickers": ["RELIANCE", "ONGC", "BPCL"],
+        "favored_when": "neutral",
+    },
+    "telecom": {
+        "tickers": ["BHARTIARTL"],
+        "favored_when": "neutral",
+    },
+}
+
+
+def _get_sector(ticker_sym: str):
+    for sector, info in SECTOR_REGIME.items():
+        if ticker_sym in info["tickers"]:
+            return sector, info["favored_when"]
+    return None, None
+
+
 class SectorRotationStrategy(BaseStrategy, BaseAgent):
     def __init__(self):
-        BaseStrategy.__init__(self, name="sector_rotation", description="Macro-driven sector rotation")
+        BaseStrategy.__init__(self, name="sector_rotation", description="Macro-regime sector rotation")
         BaseAgent.__init__(self, name="SectorRotation_Strategy", role="Sector analyst")
 
     def generate_signal(
@@ -22,65 +57,94 @@ class SectorRotationStrategy(BaseStrategy, BaseAgent):
         portfolio_state: Dict[str, Any],
         alt_data: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Rule: Assign stocks to sectors, rotate based on macro environment.
-        Simplified logic:
-        - Tech/Bank stocks (INFY, TCS, HDFCBANK): rotate in when inflation is low (opposite of VIX)
-        - Auto/Infra (LT): rotate in when economic growth outlook is positive
-        - FMCG (HINDUNILVR, ITC): defensive, rotate in when VIX high (risk-off)
-        """
-        ticker_sym = ticker.split(".")[0] if "." in ticker else ticker
+        ticker_sym = ticker.replace(".NS", "").replace(".BO", "")
         vix_raw = portfolio_state.get("vix_raw", 20.0)
         sentiment = alt_data.get("sentiment", 0.0)
+        mom_z = indicators.get("mom_12m_Z", 0.0)
+        rsi_z = indicators.get("RSI_14_Z", 0.0)
+        vol_z = indicators.get("Volatility_20_Z", 0.0)
+        macd_z = indicators.get("MACD_Z", 0.0)
 
-        # Sector mapping
-        tech_stocks = ["INFY", "TCS"]
-        bank_stocks = ["HDFCBANK", "ICICIBANK", "KOTAKBANK"]
-        auto_infra_stocks = ["LT"]  # Larsen & Toubro
-        fmcg_stocks = ["HINDUNILVR", "ITC"]
+        sector, favored_when = _get_sector(ticker_sym)
+        if not sector:
+            return {
+                "action": "HOLD",
+                "confidence": 0.2,
+                "rationale": f"{ticker_sym} not in sector rotation universe",
+                "strategy": self.name,
+            }
 
-        # Sector rotation logic
-        if ticker_sym in tech_stocks + bank_stocks:
-            # Growth sectors: like low VIX + positive sentiment
-            if vix_raw < 18.0 and sentiment > 0.0:
-                action = "LONG"
-                confidence = min(0.8, 0.5 + (20 - vix_raw) * 0.05)
-                rationale = f"Growth sector in low-VIX ({vix_raw:.1f}) environment"
-            else:
-                action = "HOLD"
-                confidence = 0.4
-                rationale = "Growth sector; waiting for lower volatility"
+        # Determine macro regime from VIX
+        if vix_raw < 16:
+            regime = "low_vix"
+            regime_label = f"risk-on (VIX={vix_raw:.0f})"
+        elif vix_raw > 22:
+            regime = "high_vix"
+            regime_label = f"risk-off (VIX={vix_raw:.0f})"
+        else:
+            regime = "neutral"
+            regime_label = f"neutral (VIX={vix_raw:.0f})"
 
-        elif ticker_sym in auto_infra_stocks:
-            # Cyclical: rotate in on positive macro
-            if sentiment > 0.1 and vix_raw < 25.0:
-                action = "LONG"
-                confidence = min(0.75, 0.5 + sentiment * 0.25)
-                rationale = f"Cyclical sector, positive macro outlook (sentiment={sentiment:.2f})"
-            else:
-                action = "HOLD"
-                confidence = 0.3
-                rationale = "Cyclical; waiting for clearer macro signals"
+        score = 0.0
+        reasons = [f"sector={sector}", regime_label]
 
-        elif ticker_sym in fmcg_stocks:
-            # Defensive: rotate in on high VIX (risk-off)
-            if vix_raw > 20.0 or sentiment < 0.0:
-                action = "LONG"
-                confidence = min(0.7, 0.5 + (vix_raw - 20) * 0.03)
-                rationale = f"Defensive sector in risk-off mode (VIX={vix_raw:.1f})"
-            else:
-                action = "HOLD"
-                confidence = 0.3
-                rationale = "Defensive; taking risk-on posture"
+        # Sector-regime alignment
+        if favored_when == regime:
+            score += 0.3
+            reasons.append(f"{sector} favored in {regime} regime")
+        elif favored_when == "neutral":
+            score += 0.1
+            reasons.append(f"{sector} regime-neutral")
+        else:
+            score -= 0.2
+            reasons.append(f"{sector} not favored in {regime} regime")
 
+        # Within-sector stock selection: momentum + sentiment + RSI
+        if mom_z > 0.3:
+            score += 0.2
+            reasons.append(f"strong relative momentum ({mom_z:.2f})")
+        elif mom_z < -0.3:
+            score -= 0.15
+            reasons.append(f"weak relative momentum ({mom_z:.2f})")
+
+        if sentiment > 0.15:
+            score += 0.1
+            reasons.append(f"positive sentiment ({sentiment:.2f})")
+        elif sentiment < -0.15:
+            score -= 0.1
+            reasons.append(f"negative sentiment ({sentiment:.2f})")
+
+        # MACD trend confirmation
+        if macd_z > 0.3 and score > 0:
+            score += 0.1
+            reasons.append("MACD confirms rotation")
+
+        # RSI extreme filter: don't rotate into overbought or out of oversold
+        if rsi_z > 1.5 and score > 0:
+            score *= 0.6
+            reasons.append(f"RSI stretched ({rsi_z:.2f}), late rotation")
+        elif rsi_z < -1.0 and score < 0:
+            score *= 0.7
+            reasons.append(f"RSI oversold ({rsi_z:.2f}), may be value")
+
+        # Low-vol stocks get a quality premium in rotation decisions
+        if vol_z < -0.5:
+            score += 0.1
+            reasons.append("low-vol quality premium")
+
+        if score > 0.2:
+            action = "LONG"
+            confidence = min(0.8, 0.5 + score)
+        elif score < -0.15:
+            action = "SHORT"
+            confidence = min(0.65, 0.35 + abs(score))
         else:
             action = "HOLD"
             confidence = 0.3
-            rationale = "Sector rotation strategy target not identified"
 
         return {
             "action": action,
             "confidence": float(round(confidence, 4)),
-            "rationale": rationale,
+            "rationale": " | ".join(reasons),
             "strategy": self.name,
         }
