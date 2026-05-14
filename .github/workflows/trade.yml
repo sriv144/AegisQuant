@@ -1,30 +1,15 @@
 name: AegisQuant US Trading Cycle
 
 on:
+  # PRIMARY TRIGGER: cron-job.org calls this via GitHub API every 20 min
+  # POST https://api.github.com/repos/sriv144/AegisQuant/dispatches
+  # body: {"event_type": "trade_cycle"}
+  repository_dispatch:
+    types: [trade_cycle]
+
+  # BACKUP: GitHub's built-in schedule (unreliable, kept as fallback only)
   schedule:
-    # Every 20 minutes during US market hours Mon-Fri
-    # ET (Eastern Time) = UTC-4 (EDT, Mar-Nov) / UTC-5 (EST, Nov-Mar)
-    # Market: 9:30 AM - 3:55 PM ET  →  13:30-19:55 UTC (EDT) / 14:30-20:55 UTC (EST)
-    # Using EDT times (Mar-Nov). EST months have ~1hr offset but circuit breakers handle it.
-    - cron: "30 13 * * 1-5"   # 9:30 AM EDT
-    - cron: "50 13 * * 1-5"   # 9:50 AM EDT
-    - cron: "10 14 * * 1-5"   # 10:10 AM EDT
-    - cron: "30 14 * * 1-5"   # 10:30 AM EDT
-    - cron: "50 14 * * 1-5"   # 10:50 AM EDT
-    - cron: "10 15 * * 1-5"   # 11:10 AM EDT
-    - cron: "30 15 * * 1-5"   # 11:30 AM EDT
-    - cron: "50 15 * * 1-5"   # 11:50 AM EDT
-    - cron: "10 16 * * 1-5"   # 12:10 PM EDT
-    - cron: "30 16 * * 1-5"   # 12:30 PM EDT
-    - cron: "50 16 * * 1-5"   # 12:50 PM EDT
-    - cron: "10 17 * * 1-5"   # 1:10 PM EDT
-    - cron: "30 17 * * 1-5"   # 1:30 PM EDT
-    - cron: "50 17 * * 1-5"   # 1:50 PM EDT
-    - cron: "10 18 * * 1-5"   # 2:10 PM EDT
-    - cron: "30 18 * * 1-5"   # 2:30 PM EDT
-    - cron: "50 18 * * 1-5"   # 2:50 PM EDT
-    - cron: "10 19 * * 1-5"   # 3:10 PM EDT
-    - cron: "30 19 * * 1-5"   # 3:30 PM EDT
+    - cron: "*/30 13-19 * * 1-5"   # every 30 min, 13-19 UTC (rough US hours)
 
   # Manual trigger from GitHub Actions UI
   workflow_dispatch:
