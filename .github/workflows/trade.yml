@@ -1,54 +1,75 @@
-name: AegisQuant Daily Trade
+name: AegisQuant US Trading Cycle
 
 on:
   schedule:
-    # US Pipeline (DISABLED for now — Option C)
-    # - cron: '35 13 * * 1-5'   # 9:35 AM ET = 13:35 UTC
+    # Every 20 minutes during US market hours Mon-Fri
+    # ET (Eastern Time) = UTC-4 (EDT, Mar-Nov) / UTC-5 (EST, Nov-Mar)
+    # Market: 9:30 AM - 3:55 PM ET  →  13:30-19:55 UTC (EDT) / 14:30-20:55 UTC (EST)
+    # Using EDT times (Mar-Nov). EST months have ~1hr offset but circuit breakers handle it.
+    - cron: "30 13 * * 1-5"   # 9:30 AM EDT
+    - cron: "50 13 * * 1-5"   # 9:50 AM EDT
+    - cron: "10 14 * * 1-5"   # 10:10 AM EDT
+    - cron: "30 14 * * 1-5"   # 10:30 AM EDT
+    - cron: "50 14 * * 1-5"   # 10:50 AM EDT
+    - cron: "10 15 * * 1-5"   # 11:10 AM EDT
+    - cron: "30 15 * * 1-5"   # 11:30 AM EDT
+    - cron: "50 15 * * 1-5"   # 11:50 AM EDT
+    - cron: "10 16 * * 1-5"   # 12:10 PM EDT
+    - cron: "30 16 * * 1-5"   # 12:30 PM EDT
+    - cron: "50 16 * * 1-5"   # 12:50 PM EDT
+    - cron: "10 17 * * 1-5"   # 1:10 PM EDT
+    - cron: "30 17 * * 1-5"   # 1:30 PM EDT
+    - cron: "50 17 * * 1-5"   # 1:50 PM EDT
+    - cron: "10 18 * * 1-5"   # 2:10 PM EDT
+    - cron: "30 18 * * 1-5"   # 2:30 PM EDT
+    - cron: "50 18 * * 1-5"   # 2:50 PM EDT
+    - cron: "10 19 * * 1-5"   # 3:10 PM EDT
+    - cron: "30 19 * * 1-5"   # 3:30 PM EDT
 
-    # India Pipeline: 9:15 AM IST = 03:45 UTC (daily Mon-Fri)
-    - cron: '45 3 * * 1-5'
-
-  # Allow manual trigger from GitHub Actions UI for testing
+  # Manual trigger from GitHub Actions UI
   workflow_dispatch:
 
 jobs:
-  india-trade:
-    name: India NSE Trading Cycle
+  trade:
+    name: US Trading Cycle
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+
+    env:
+      MARKET: US
+      BROKER: alpaca
+      INITIAL_CAPITAL: "100000"
+      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      ENABLE_MOCK_DATA: "False"
+      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "websockets>=13.0" "alpaca-trade-api>=3.0.0"
 
-      - name: Run AegisQuant India trading cycle
-        env:
-          GROWW_API_KEY: ${{ secrets.GROWW_API_KEY }}
-          GROWW_SECRET_KEY: ${{ secrets.GROWW_SECRET_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          ENABLE_BROKER_EXECUTION: ${{ secrets.ENABLE_BROKER_EXECUTION }}
-          ENABLE_MOCK_DATA: "False"
-          MAX_DRAWDOWN_THRESHOLD: "0.15"
-          MIN_SHARPE_THRESHOLD: "0.0"
-        run: python main_india.py --now
+      - name: Run one trading cycle
+        run: python main_us.py --now
 
-      - name: Upload decision log (SQLite DB)
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aegisquant-india-db-${{ github.run_number }}
-          path: aegisquant_live.db
-          retention-days: 30
+          name: trade-log-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
           if-no-files-found: ignore
