@@ -1,0 +1,13 @@
+.env
+.git
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+.mypy_cache
+logs/
+*.log
+aegisquant.db
+aegisquant_live.db
+node_modules/

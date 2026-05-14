@@ -3,19 +3,51 @@ Circuit Breakers
 ================
 Hard-coded safety overrides protecting the execution engine from
 unbounded RL policy decisions or extreme macro events.
-Supports both US (ET) and India (IST) market timezones.
+Supports both US (ET/EST/EDT) and India (IST) market timezones.
 """
 import os
 import numpy as np
 from typing import Dict, Any, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
-IST = timezone(timedelta(hours=5, minutes=30))
-ET = timezone(timedelta(hours=-5))  # EST (no DST adjustment — use pytz for production)
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+    _ET = ZoneInfo("America/New_York")   # handles EDT/EST automatically
+    _IST = ZoneInfo("Asia/Kolkata")
+    def _now_market():
+        return datetime.now(_ET if MARKET == "US" else _IST)
+except ImportError:
+    # Fallback: fixed offsets (no DST — acceptable for paper trading)
+    _ET = timezone(timedelta(hours=-5))
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    def _now_market():
+        tz = _ET if MARKET == "US" else _IST
+        return datetime.now(tz)
+
+# US market holidays (NYSE observed, 2025-2027)
+_US_HOLIDAYS = {
+    # 2025
+    date(2025, 1, 1), date(2025, 1, 20), date(2025, 2, 17),
+    date(2025, 4, 18), date(2025, 5, 26), date(2025, 6, 19),
+    date(2025, 7, 4), date(2025, 9, 1), date(2025, 11, 27),
+    date(2025, 12, 25),
+    # 2026
+    date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16),
+    date(2026, 4, 3), date(2026, 5, 25), date(2026, 6, 19),
+    date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26),
+    date(2026, 12, 25),
+    # 2027
+    date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15),
+    date(2027, 3, 26), date(2027, 5, 31), date(2027, 6, 18),
+    date(2027, 7, 5), date(2027, 9, 6), date(2027, 11, 25),
+    date(2027, 12, 24),
+}
 
 # Market configuration
 MARKET = os.getenv("MARKET", "US").upper()
-MARKET_TZ = ET if MARKET == "US" else IST
+IST = timezone(timedelta(hours=5, minutes=30))  # keep for backward compat
+ET = timezone(timedelta(hours=-5))              # keep for backward compat
+MARKET_TZ = _ET if MARKET == "US" else _IST
 
 class MaxPositionRule:
     def __init__(self, max_weight: float = 0.95):
@@ -77,8 +109,20 @@ class TimeWindowRule:
         self.end_fmt = datetime.strptime(no_trade_after, "%H:%M").time()
 
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
-        """Prevents trading during highly illiquid open/close auctions."""
-        curr_time = datetime.now(MARKET_TZ).time()
+        """Prevents trading outside market hours or on holidays."""
+        now = _now_market()
+        curr_time = now.time()
+        curr_date = now.date()
+
+        # Block on weekends
+        if curr_date.weekday() >= 5:  # 5=Sat, 6=Sun
+            current_weights = state.get("current_weights", np.zeros_like(target_weights))
+            return current_weights, True
+
+        # Block on US market holidays
+        if MARKET == "US" and curr_date in _US_HOLIDAYS:
+            current_weights = state.get("current_weights", np.zeros_like(target_weights))
+            return current_weights, True
 
         if curr_time < self.start_fmt or curr_time > self.end_fmt:
             current_weights = state.get("current_weights", np.zeros_like(target_weights))
@@ -140,7 +184,7 @@ class MISAutoCloseRule:
         """
         If current time >= close_time and any MIS/day-trade position exists, close them.
         """
-        curr_time = datetime.now(MARKET_TZ).time()
+        curr_time = _now_market().time()
 
         if curr_time >= self.close_time_fmt:
             # Check if any trade_types are MIS

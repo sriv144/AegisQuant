@@ -1,29 +1,36 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: quant
-      POSTGRES_PASSWORD: quant_password
-      POSTGRES_DB: hedgefund
-    ports:
-      - "5432:5432"
+  trader:
+    build: .
+    container_name: aegisquant-trader
+    command: python main_us.py
+    env_file: .env
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U quant -d hedgefund"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - ./aegisquant_live.db:/app/aegisquant_live.db
+      - ./models:/app/models
+      - ./logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
-  redis:
-    image: redis:7-alpine
+  dashboard:
+    build: .
+    container_name: aegisquant-dashboard
+    command: python -m src.webapp.server --host 0.0.0.0 --port 8000
+    env_file: .env
     ports:
-      - "6379:6379"
+      - "8000:8000"
     volumes:
-      - redisdata:/data
-
-volumes:
-  pgdata:
-  redisdata:
+      - ./aegisquant_live.db:/app/aegisquant_live.db
+    depends_on:
+      - trader
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
