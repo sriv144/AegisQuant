@@ -118,6 +118,12 @@ def login(body: dict):
     return {"token": token, "expires_in": _TOKEN_TTL_HOURS * 3600, "auth_enabled": True}
 
 
+@app.get("/health")
+def health():
+    """Liveness probe for Docker / load balancers."""
+    return {"status": "ok", "market": MARKET}
+
+
 @app.get("/api/auth/status")
 def auth_status():
     """Check if auth is enabled (so frontend knows whether to show login screen)."""
