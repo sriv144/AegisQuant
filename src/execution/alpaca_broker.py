@@ -1,10 +1,10 @@
 """
 Alpaca Broker Adapter (Paper + Live)
 =====================================
-Implements BaseBroker for Alpaca's trading API.
-Supports both paper trading and live trading via ALPACA_BASE_URL.
+Implements BaseBroker using alpaca-py (the modern Alpaca SDK).
+No websockets conflict — alpaca-py is dependency-clean.
 
-Requires: pip install alpaca-trade-api
+Requires: pip install alpaca-py  (already in requirements.txt)
 
 Setup:
   1. Create account at https://alpaca.markets/
@@ -30,7 +30,17 @@ from src.execution.broker_base import (
 logger = logging.getLogger(__name__)
 
 try:
-    import alpaca_trade_api as tradeapi
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import (
+        MarketOrderRequest, LimitOrderRequest, GetOrdersRequest,
+    )
+    from alpaca.trading.enums import (
+        OrderSide as AlpacaSide,
+        TimeInForce,
+        QueryOrderStatus,
+    )
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockLatestTradeRequest
     HAS_ALPACA = True
 except ImportError:
     HAS_ALPACA = False
@@ -38,15 +48,14 @@ except ImportError:
 
 class AlpacaBroker(BaseBroker):
     """
-    Alpaca broker adapter for US equities.
+    Alpaca broker adapter for US equities using alpaca-py SDK.
     Supports paper and live trading. Commission-free.
     """
 
-    # Alpaca uses different time-in-force values
     _TIF_MAP = {
-        ProductType.CNC: "gtc",   # Good Till Cancel (like delivery)
-        ProductType.MIS: "day",   # Day order (like intraday)
-        ProductType.NRML: "gtc",  # Default to GTC
+        ProductType.CNC: TimeInForce.GTC if HAS_ALPACA else "gtc",
+        ProductType.MIS: TimeInForce.DAY if HAS_ALPACA else "day",
+        ProductType.NRML: TimeInForce.GTC if HAS_ALPACA else "gtc",
     }
 
     def __init__(self):
@@ -54,32 +63,31 @@ class AlpacaBroker(BaseBroker):
         self.secret_key = os.getenv("ALPACA_SECRET_KEY", "")
         self.base_url = os.getenv(
             "ALPACA_BASE_URL",
-            "https://paper-api.alpaca.markets"  # Paper trading by default
+            "https://paper-api.alpaca.markets"
         )
-
-        self.api: Optional[object] = None
-        self._connected = False
         self._is_paper = "paper" in self.base_url.lower()
+        self.client: Optional[TradingClient] = None
+        self.data_client: Optional[StockHistoricalDataClient] = None
+        self._connected = False
 
     def connect(self) -> bool:
         if not HAS_ALPACA:
-            logger.error("[Alpaca] alpaca-trade-api not installed. Run: pip install alpaca-trade-api")
+            logger.error("[Alpaca] alpaca-py not installed. Run: pip install alpaca-py")
             return False
-
         if not self.api_key or not self.secret_key:
             logger.error("[Alpaca] Missing ALPACA_API_KEY or ALPACA_SECRET_KEY")
             return False
-
         try:
-            self.api = tradeapi.REST(
-                key_id=self.api_key,
+            self.client = TradingClient(
+                api_key=self.api_key,
                 secret_key=self.secret_key,
-                base_url=self.base_url,
-                api_version='v2',
+                paper=self._is_paper,
             )
-
-            # Verify connection by fetching account
-            account = self.api.get_account()
+            self.data_client = StockHistoricalDataClient(
+                api_key=self.api_key,
+                secret_key=self.secret_key,
+            )
+            account = self.client.get_account()
             mode = "PAPER" if self._is_paper else "LIVE"
             logger.info(
                 f"[Alpaca] Connected ({mode}) — "
@@ -89,96 +97,85 @@ class AlpacaBroker(BaseBroker):
             )
             self._connected = True
             return True
-
         except Exception as e:
             logger.error(f"[Alpaca] Connection failed: {e}")
             return False
 
     def get_ltp(self, ticker: str) -> float:
-        """Fetch last trade price from Alpaca."""
-        if not self._connected or not self.api:
+        if not self._connected or not self.data_client:
             return 0.0
         try:
             symbol = self._clean_symbol(ticker)
-            trade = self.api.get_latest_trade(symbol)
-            return float(trade.price)
+            req = StockLatestTradeRequest(symbol_or_symbols=[symbol])
+            trade = self.data_client.get_stock_latest_trade(req)
+            return float(trade[symbol].price)
         except Exception as e:
-            logger.error(f"[Alpaca] LTP failed for {ticker}: {e}")
+            logger.warning(f"[Alpaca] LTP failed for {ticker}: {e}")
             return 0.0
 
     def get_portfolio_value(self) -> float:
-        """Total equity from Alpaca account."""
-        if not self._connected or not self.api:
+        if not self._connected or not self.client:
             return 0.0
         try:
-            account = self.api.get_account()
-            return float(account.equity)
+            return float(self.client.get_account().equity)
         except Exception as e:
             logger.error(f"[Alpaca] Portfolio value failed: {e}")
             return 0.0
 
     def place_order(self, order: OrderRequest) -> OrderResult:
-        if not self._connected or not self.api:
+        if not self._connected or not self.client:
             return self._rejected(order, "Not connected")
-
         try:
             symbol = self._clean_symbol(order.ticker)
-            side = "buy" if order.side == OrderSide.BUY else "sell"
-            order_type = "market" if order.order_type == OrderType.MARKET else "limit"
-            tif = self._TIF_MAP.get(order.product, "day")
+            side = AlpacaSide.BUY if order.side == OrderSide.BUY else AlpacaSide.SELL
+            tif = self._TIF_MAP.get(order.product, TimeInForce.DAY)
 
-            params = {
-                "symbol": symbol,
-                "qty": order.quantity,
-                "side": side,
-                "type": order_type,
-                "time_in_force": tif,
-            }
             if order.order_type == OrderType.LIMIT and order.limit_price:
-                params["limit_price"] = order.limit_price
+                req = LimitOrderRequest(
+                    symbol=symbol, qty=order.quantity, side=side,
+                    time_in_force=tif, limit_price=order.limit_price,
+                )
+            else:
+                req = MarketOrderRequest(
+                    symbol=symbol, qty=order.quantity, side=side,
+                    time_in_force=tif,
+                )
 
-            alpaca_order = self.api.submit_order(**params)
-            order_id = alpaca_order.id
-            logger.info(f"[Alpaca] Order submitted: {side.upper()} {order.quantity}x {symbol} -> {order_id}")
+            alpaca_order = self.client.submit_order(req)
+            order_id = str(alpaca_order.id)
+            logger.info(f"[Alpaca] Order submitted: {side.value.upper()} {order.quantity}x {symbol} → {order_id}")
 
-            # Wait for fill (market orders fill almost instantly on Alpaca paper)
-            fill_price = 0.0
-            filled_qty = 0
-            status = OrderStatus.PENDING
+            # Poll for fill (market orders fill almost instantly on paper)
+            fill_price, filled_qty, status = 0.0, 0, OrderStatus.PENDING
+            final_order = alpaca_order
 
-            for _ in range(10):  # Poll up to 5 seconds
+            for _ in range(10):
                 time.sleep(0.5)
-                updated = self.api.get_order(order_id)
-                if updated.status == "filled":
-                    fill_price = float(updated.filled_avg_price)
-                    filled_qty = int(updated.filled_qty)
+                final_order = self.client.get_order_by_id(order_id)
+                if final_order.status.value == "filled":
+                    fill_price = float(final_order.filled_avg_price or 0)
+                    filled_qty = int(final_order.filled_qty or 0)
                     status = OrderStatus.FILLED
                     break
-                elif updated.status == "partially_filled":
-                    fill_price = float(updated.filled_avg_price) if updated.filled_avg_price else 0.0
-                    filled_qty = int(updated.filled_qty) if updated.filled_qty else 0
+                elif final_order.status.value == "partially_filled":
+                    fill_price = float(final_order.filled_avg_price or 0)
+                    filled_qty = int(final_order.filled_qty or 0)
                     status = OrderStatus.PARTIAL
                     break
-                elif updated.status in ("rejected", "canceled", "expired"):
-                    return self._rejected(order, f"Order {updated.status}")
+                elif final_order.status.value in ("rejected", "canceled", "expired"):
+                    return self._rejected(order, f"Order {final_order.status.value}")
 
             logger.info(
-                f"[Alpaca] {side.upper()} {filled_qty}x {symbol} "
+                f"[Alpaca] {side.value.upper()} {filled_qty}x {symbol} "
                 f"@ ${fill_price:.2f} — {status.value}"
             )
-
             return OrderResult(
-                order_id=order_id,
-                ticker=order.ticker,
-                side=order.side,
-                requested_qty=order.quantity,
-                filled_qty=filled_qty,
-                fill_price=fill_price,
-                status=status,
-                slippage_bps=0.0,  # Alpaca reports real fills
-                commission=0.0,     # Alpaca is commission-free
+                order_id=order_id, ticker=order.ticker, side=order.side,
+                requested_qty=order.quantity, filled_qty=filled_qty,
+                fill_price=fill_price, status=status,
+                slippage_bps=0.0, commission=0.0,
                 timestamp=datetime.utcnow().isoformat(),
-                raw_response={"alpaca_status": updated.status if 'updated' in dir() else "unknown"},
+                raw_response={"alpaca_status": final_order.status.value},
             )
 
         except Exception as e:
@@ -186,11 +183,10 @@ class AlpacaBroker(BaseBroker):
             return self._rejected(order, str(e))
 
     def get_positions(self) -> List[dict]:
-        """Get all open positions from Alpaca."""
-        if not self._connected or not self.api:
+        if not self._connected or not self.client:
             return []
         try:
-            positions = self.api.list_positions()
+            positions = self.client.get_all_positions()
             return [
                 {
                     "ticker": p.symbol,
@@ -200,7 +196,7 @@ class AlpacaBroker(BaseBroker):
                     "market_value": float(p.market_value),
                     "unrealized_pnl": float(p.unrealized_pl),
                     "unrealized_pnl_pct": float(p.unrealized_plpc),
-                    "side": p.side,
+                    "side": p.side.value,
                 }
                 for p in positions
             ]
@@ -209,21 +205,21 @@ class AlpacaBroker(BaseBroker):
             return []
 
     def get_order_history(self, limit: int = 50) -> List[dict]:
-        """Get recent order history from Alpaca."""
-        if not self._connected or not self.api:
+        if not self._connected or not self.client:
             return []
         try:
-            orders = self.api.list_orders(status="all", limit=limit)
+            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=limit)
+            orders = self.client.get_orders(req)
             return [
                 {
-                    "order_id": o.id,
+                    "order_id": str(o.id),
                     "symbol": o.symbol,
-                    "side": o.side,
-                    "qty": o.qty,
-                    "filled_qty": o.filled_qty,
-                    "type": o.type,
-                    "status": o.status,
-                    "filled_avg_price": o.filled_avg_price,
+                    "side": o.side.value,
+                    "qty": str(o.qty),
+                    "filled_qty": str(o.filled_qty),
+                    "type": o.type.value,
+                    "status": o.status.value,
+                    "filled_avg_price": str(o.filled_avg_price),
                     "submitted_at": str(o.submitted_at),
                 }
                 for o in orders
@@ -233,17 +229,16 @@ class AlpacaBroker(BaseBroker):
             return []
 
     def get_account(self) -> dict:
-        """Get full account details from Alpaca."""
-        if not self._connected or not self.api:
+        if not self._connected or not self.client:
             return {}
         try:
-            acct = self.api.get_account()
+            acct = self.client.get_account()
             return {
                 "equity": float(acct.equity),
                 "buying_power": float(acct.buying_power),
                 "cash": float(acct.cash),
                 "portfolio_value": float(acct.portfolio_value),
-                "status": acct.status,
+                "status": str(acct.status),
                 "pattern_day_trader": acct.pattern_day_trader,
                 "day_trade_count": acct.daytrade_count,
             }
@@ -253,7 +248,6 @@ class AlpacaBroker(BaseBroker):
 
     @staticmethod
     def _clean_symbol(ticker: str) -> str:
-        """Remove any exchange suffixes (shouldn't be needed for US, but safety net)."""
         return ticker.replace(".US", "").replace(".NYSE", "").replace(".NASDAQ", "").strip()
 
     @staticmethod
