@@ -8,3 +8,18 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# pip / shell-redirect artifacts (do not commit any file whose name starts with =)
+=*
+
+# pytest output dumps (commit results to the issue tracker, not the repo)
+pytest_clean.txt
+pytest_output.txt
+pytest_run.txt
+pytest_*.txt
+
+# trained-model snapshots (large binaries; use model_registry/ and a release artifact instead)
+*.zip
+
+# misc local notes
+pcr.txt

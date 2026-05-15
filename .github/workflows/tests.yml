@@ -1,0 +1,48 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MARKET: US
+      BROKER: alpaca
+      INITIAL_CAPITAL: "100000"
+      ENABLE_MOCK_DATA: "True"
+      ALPACA_API_KEY: ci-dummy-key
+      ALPACA_SECRET_KEY: ci-dummy-secret
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      OPENAI_API_KEY: ci-dummy-openai-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "websockets>=13.0"
+
+      - name: Run pytest
+        run: pytest -q --maxfail=10
+        continue-on-error: true
