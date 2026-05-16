@@ -94,7 +94,7 @@ Interpretation guidelines:
 Produce a JSON output matching this schema exactly:
 {{
     "agent_name": "Fundamental_Research_Agent",
-    "action": "PROPOSE_LONG" | "PROPOSE_SHORT" | "HOLD",
+    "action": "PROPOSE_LONG" | "HOLD",
     "confidence": <float between 0.0 and 1.0>,
     "rationale": "<concise explanation referencing the actual data values>"
 }}
@@ -116,9 +116,9 @@ Produce a JSON output matching this schema exactly:
                 confidence = 0.58
                 rationale = "Deep pullback with elevated volume suggests capitulation."
             elif isinstance(ytd_return, (int, float)) and ytd_return < -10 and volume_ratio < 1.0:
-                action = "PROPOSE_SHORT"
-                confidence = 0.57
-                rationale = "Weak YTD trend without volume confirmation points to continued weakness."
+                action = "HOLD"
+                confidence = 0.30
+                rationale = "Weak YTD trend without volume confirmation — staying flat (long-only mode)."
 
         fallback = {
             "agent_name": self.name,

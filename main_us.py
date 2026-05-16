@@ -1,12 +1,14 @@
 """
-US Live Trading Loop (Professional Multi-Mode Trader)
-======================================================
-Runs the dynamic multi-strategy RL pipeline on US markets with Alpaca.
-- Dynamic universe screening (S&P 500 + growth stocks)
-- Dual-mode trading: 80% swing (GTC) + 20% intraday (DAY orders)
-- Position management with stop-loss, take-profit, and aging exits
-- RL meta-learner for optimal intraday/swing split
-Scheduled for 9:35 AM ET (market open + 5 min) on weekdays.
+US Live Trading Loop (Agent-Consensus + Bollinger Band)
+========================================================
+Runs batch consensus scoring across all tickers every cycle (every 30 min
+via GitHub Actions).
+
+Architecture:
+  Screen universe → fetch data → run 9 strategies + 4 research agents per ticker
+  → ConsensusWeightEngine (0.6 * agent + 0.4 * strategy + BB filter)
+  → rank + allocate (max 10%/ticker, max 15 positions, long-only)
+  → delta vs Alpaca live positions → execute only the difference
 
 Set these env vars:
   MARKET=US
@@ -14,7 +16,7 @@ Set these env vars:
   ALPACA_API_KEY=...
   ALPACA_SECRET_KEY=...
   ALPACA_BASE_URL=https://paper-api.alpaca.markets  (paper trading)
-  INITIAL_CAPITAL=100000  (default $100K for US paper)
+  INITIAL_CAPITAL=100000
 """
 
 import os
@@ -25,6 +27,7 @@ os.environ.setdefault("MARKET", "US")
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
+import logging
 
 from src import config  # noqa: F401  # Ensures .env is loaded
 from src.execution import get_broker
@@ -36,14 +39,26 @@ from src.data.us_universe_screener import us_universe_screener
 from src.engine.circuit_breakers import ExecutionFailsafe
 from src.engine.position_manager import position_manager, Position
 from src.engine.capital_allocator import capital_allocator
-from src.agents.orchestrator import orchestrator
-from src.agents.state import AgentState
-from src.agents.portfolio.pm_agent import pm_agent
+from src.engine.consensus_weight_engine import ConsensusWeightEngine
+from src.strategies import STRATEGY_REGISTRY
+from src.agents.research.quant_agent import quant_agent
+from src.agents.research.fundamental_agent import fundamental_agent
+from src.agents.research.macro_agent import macro_agent
+from src.agents.research.sentiment_agent import sentiment_agent
 from src.db.models import db_manager
 
-_failsafe = ExecutionFailsafe()
+logger = logging.getLogger(__name__)
 
-INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))  # $100K USD paper capital
+_failsafe = ExecutionFailsafe()
+_consensus_engine = ConsensusWeightEngine(
+    agent_weight=0.6,
+    strategy_weight=0.4,
+    min_consensus=0.30,
+    max_positions=15,
+    max_per_ticker=0.10,
+)
+
+INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))
 
 
 def _fetch_vix() -> float:
@@ -79,67 +94,71 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
     }
 
 
-def _fetch_weekly_strategy_scores() -> dict:
-    """
-    Compute per-strategy performance scores from realized trades in the last 30 days.
-    """
+def _get_held_tickers(broker: BaseBroker) -> set:
+    """Query broker for currently held positions."""
+    held = set()
     try:
-        from sqlalchemy import text
-        db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
-        from sqlalchemy import create_engine
-        engine = create_engine(db_url)
-
-        query = text("""
-            SELECT strategy,
-                   COUNT(*) as trade_count,
-                   AVG(pnl_pct) as avg_pnl,
-                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
-            FROM open_positions
-            WHERE status = 'CLOSED'
-              AND exit_date > datetime('now', '-30 days')
-              AND pnl_pct IS NOT NULL
-            GROUP BY strategy
-            ORDER BY avg_pnl DESC
-        """)
-
-        with engine.connect() as conn:
-            result = conn.execute(query)
-            rows = result.fetchall()
-
-        if not rows:
-            return _default_strategy_scores()
-
-        scores = {}
-        for row in rows:
-            strategy, trade_count, avg_pnl, wins = row
-            win_rate = wins / trade_count if trade_count > 0 else 0.0
-            scores[strategy] = round(avg_pnl * 100 + win_rate * 10, 2)
-
-        print(f"[Strategy Scores] {len(scores)} strategies scored from {sum(r[1] for r in rows)} trades")
-        return scores
-
+        positions = broker.get_positions()
+        for pos in positions:
+            sym = pos.get("ticker", pos.get("symbol", ""))
+            qty = int(pos.get("qty", 0))
+            if sym and qty > 0:
+                held.add(sym)
     except Exception as e:
-        print(f"[Strategy Scores] Query failed ({e}), using defaults")
-        return _default_strategy_scores()
+        print(f"[Positions] Failed to query broker positions: {e}")
+
+    # Also check DB-tracked positions
+    try:
+        db_positions = position_manager.get_open_positions()
+        for ticker in db_positions:
+            held.add(ticker)
+    except Exception:
+        pass
+
+    return held
 
 
-def _default_strategy_scores() -> dict:
-    """Fallback scores — equal weight across core strategies."""
-    return {
-        "momentum": 0.0,
-        "mean_reversion": 0.0,
-        "trend_following": 0.0,
-        "factor_investing": 0.0,
-        "volatility_breakout": 0.0,
-        "earnings_momentum": 0.0,
-        "sector_rotation": 0.0,
-        "gap_fill": 0.0,
-        "pairs_trading": 0.0,
+def _run_research_agents(ticker: str, indicators: dict, alt_data: dict, portfolio_state: dict) -> list:
+    """Run all 4 research agents for a single ticker. Returns list of signal dicts."""
+    state = {
+        "current_asset": ticker,
+        "technical_indicators": indicators,
+        "alternative_data": alt_data,
+        "portfolio_state": portfolio_state,
+        "research_signals": [],
     }
+
+    signals = []
+    for agent in [quant_agent, fundamental_agent, macro_agent, sentiment_agent]:
+        try:
+            result = agent.invoke(state)
+            agent_signals = result.get("research_signals", [])
+            signals.extend(agent_signals)
+        except Exception as e:
+            print(f"  [{ticker}] Agent {getattr(agent, 'name', '?')} failed: {e}")
+
+    return signals
+
+
+def _run_all_strategies(ticker: str, indicators: dict, portfolio_state: dict, alt_data: dict) -> list:
+    """Run all 9 strategies for a single ticker. Returns list of signal dicts."""
+    signals = []
+    for name, strategy in STRATEGY_REGISTRY.items():
+        try:
+            signal = strategy.generate_signal(
+                ticker=ticker,
+                indicators=indicators,
+                portfolio_state=portfolio_state,
+                alt_data=alt_data,
+            )
+            signals.append(signal)
+        except Exception as e:
+            print(f"  [{ticker}] Strategy {name} failed: {e}")
+    return signals
 
 
 def main_us_live_loop():
-    print(f"\n[{datetime.now()}] [US Pipeline] Waking up. Initiating daily RL execution cycle...")
+    print(f"\n[{datetime.now()}] [US Pipeline] Waking up. Running agent-consensus cycle...")
 
     # 1. Refresh universe
     print("[Pipeline] Screening universe...")
@@ -164,11 +183,11 @@ def main_us_live_loop():
     # 4. Build live portfolio state (uses DB-tracked P&L)
     portfolio_state = _get_live_portfolio_state(broker, UNIVERSE, theo_prices)
 
-    # 5. Capital allocator: compute intraday vs swing budgets
+    # 5. Capital allocator: compute budgets
     intraday_budget, delivery_budget = capital_allocator.get_budgets(portfolio_state)
     print(f"[CapitalAllocator] Budgets: ${intraday_budget:,.0f} intraday, ${delivery_budget:,.0f} swing")
 
-    # 6. Pre-compute technical indicators + sentiment
+    # 6. Pre-compute technical indicators + sentiment for all tickers
     print("[Pipeline] Pre-computing technical indicators and sentiment signals...")
     ticker_indicators = {}
     ticker_alt_data = {}
@@ -192,76 +211,68 @@ def main_us_live_loop():
             "news_volume": agg.get("news_volume", 0),
         }
 
-    # 7. Fetch weekly strategy scores
-    strategy_scores = _fetch_weekly_strategy_scores()
+    # 7. Get currently held tickers from broker + DB
+    held_tickers = _get_held_tickers(broker)
+    print(f"[Pipeline] Currently holding {len(held_tickers)} positions: {sorted(held_tickers)}")
 
-    # 8. Run the full LangGraph agent pipeline per ticker
-    print("[Pipeline] Running LLM consensus + PPO inference via agent orchestrator...")
-    target_weights = np.zeros(len(UNIVERSE))
-    trade_types = {}
+    # 8. Run 4 research agents per ticker (batch)
+    print("[Pipeline] Running 4 research agents across all tickers...")
+    agent_signals = {}
+    for ticker in UNIVERSE:
+        signals = _run_research_agents(
+            ticker, ticker_indicators[ticker], ticker_alt_data[ticker], portfolio_state
+        )
+        agent_signals[ticker] = signals
+
+    # 9. Run 9 strategies per ticker (batch)
+    print("[Pipeline] Running 9 strategies across all tickers...")
+    strategy_signals = {}
+    for ticker in UNIVERSE:
+        signals = _run_all_strategies(
+            ticker, ticker_indicators[ticker], portfolio_state, ticker_alt_data[ticker]
+        )
+        strategy_signals[ticker] = signals
+
+    # 10. Consensus weight engine: score → BB filter → rank → allocate
+    print("[Pipeline] Computing consensus weights with BB entry/exit filter...")
+    target_weights, actions, scores = _consensus_engine.compute_target_weights(
+        tickers=UNIVERSE,
+        agent_signals=agent_signals,
+        strategy_signals=strategy_signals,
+        indicators=ticker_indicators,
+        held_tickers=held_tickers,
+    )
+
+    # Log per-ticker decisions
     trade_reasoning_map = {}
-    model_version = "us_orchestrator_fallback"
-
     for i, ticker in enumerate(UNIVERSE):
-        initial_state: AgentState = {
-            "current_asset": ticker,
-            "timestamp": datetime.now().isoformat(),
-            "market_data": {"ticker": ticker, "price": theo_prices.get(ticker, 0.0)},
-            "alternative_data": ticker_alt_data[ticker],
-            "technical_indicators": ticker_indicators[ticker],
-            "active_strategies": sorted(strategy_scores, key=strategy_scores.get, reverse=True)[:5],
-            "strategy_scores": strategy_scores,
-            "current_strategy": max(strategy_scores, key=strategy_scores.get) if strategy_scores else "momentum",
-            "trade_type": "SKIP",
-            "stop_loss_pct": 0.08,
-            "take_profit_pct": 0.20,
-            "intraday_budget": intraday_budget,
-            "delivery_budget": delivery_budget,
-            "research_signals": [],
-            "committee_decision": {},
-            "allocation_request": {},
-            "risk_approval": {},
-            "execution_result": {},
-            "portfolio_state": portfolio_state,
-        }
-        final_state = orchestrator.run_cycle(initial_state)
+        action = actions[ticker]
+        score = scores[ticker]
+        weight = target_weights[i]
+        bb_pos = ticker_indicators.get(ticker, {}).get("BB_Position", 0.5)
 
-        allocation = final_state.get("allocation_request", {})
-        exposure = float(allocation.get("adjusted_exposure_pct") or allocation.get("target_exposure_pct") or 0.0)
-        committee_dir = final_state.get("committee_decision", {}).get("direction", "LONG")
-        target_weights[i] = exposure if committee_dir != "SHORT" else -exposure
+        if action != "SKIP":
+            print(f"  [{ticker}] {action} | consensus={score:.3f} | BB={bb_pos:.3f} | weight={weight:.3%}")
 
-        trade_type = final_state.get("trade_type", "SKIP")
-        trade_types[ticker] = trade_type
-
-        signals = final_state.get("research_signals", [])
-        committee = final_state.get("committee_decision", {})
-        risk = final_state.get("risk_approval", {})
         trade_reasoning_map[ticker] = {
-            "research_signals": [
-                {"agent": s.get("agent_name", "unknown"), "action": s.get("action", ""), "rationale": s.get("rationale", "")}
-                for s in signals
+            "consensus_action": action,
+            "consensus_score": round(score, 4),
+            "bb_position": round(bb_pos, 4),
+            "target_weight": round(float(weight), 4),
+            "agent_signals": [
+                {"agent": s.get("agent_name", "?"), "action": s.get("action", ""), "confidence": s.get("confidence", 0)}
+                for s in agent_signals.get(ticker, [])
             ],
-            "committee": {"action": committee.get("action", ""), "direction": committee.get("direction", ""), "rationale": committee.get("rationale", "")},
-            "allocation": {"exposure_pct": exposure, "rationale": allocation.get("rationale", "")},
-            "risk": {"action": risk.get("action", ""), "rationale": risk.get("rationale", "")},
-            "trade_type": trade_type,
+            "strategy_signals": [
+                {"strategy": s.get("strategy", "?"), "action": s.get("action", ""), "confidence": s.get("confidence", 0)}
+                for s in strategy_signals.get(ticker, [])
+            ],
         }
 
-        if trade_type != "SKIP":
-            print(f"  [{ticker}] {trade_type} @ {exposure*100:.1f}%")
+    print(f"[Pipeline] Consensus Weights -> {target_weights.round(3)}")
 
-    if pm_agent.rl_model is not None:
-        model_version = "us_ppo_rl_live"
-
-    # 9. Normalize to gross exposure constraint (1.5)
-    gross = np.sum(np.abs(target_weights))
-    if gross > 1.5:
-        target_weights = target_weights * (1.5 / gross)
-
-    print(f"[Pipeline] Raw RL Weights -> {target_weights.round(3)}")
-
-    # 10. Run circuit breakers with live state
+    # 11. Run circuit breakers with live state
+    trade_types = {t: "CNC" for t in UNIVERSE}  # All swing/delivery in consensus mode
     cb_state = {
         "drawdown": portfolio_state["current_drawdown"],
         "vix_raw": portfolio_state["vix_raw"],
@@ -275,7 +286,7 @@ def main_us_live_loop():
         print(f"[CircuitBreaker] TRIGGERED: {cb_reason}. Weights adjusted.")
     print(f"[Pipeline] Safe Weights -> {safe_weights.round(3)}")
 
-    # 11. Fire to execution via broker abstraction layer
+    # 12. Delta-based execution via broker
     results = broker.execute_target_weights(
         tickers=UNIVERSE,
         target_weights=safe_weights,
@@ -284,24 +295,39 @@ def main_us_live_loop():
         trade_types=trade_types,
     )
 
-    # 12. Log positions for swing trades using actual fill prices
+    # 13. Log positions for new entries using actual fill prices
     for i, ticker in enumerate(UNIVERSE):
-        if trade_types.get(ticker) == "CNC" and safe_weights[i] != 0:
-            strategy = initial_state.get("current_strategy", "momentum")
+        if actions.get(ticker) == "ENTER" and safe_weights[i] > 0:
             result = results.get(ticker)
             if result and result.filled_qty > 0:
                 fill_price = result.fill_price if result.fill_price > 0 else theo_prices[ticker]
-                pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy)
+                # Determine which strategy had highest confidence
+                strat_sigs = strategy_signals.get(ticker, [])
+                best_strat = "consensus"
+                if strat_sigs:
+                    long_strats = [s for s in strat_sigs if s.get("action") == "LONG"]
+                    if long_strats:
+                        best_strat = max(long_strats, key=lambda s: s.get("confidence", 0)).get("strategy", "consensus")
+                pos = Position.default_cnc(ticker, fill_price, result.filled_qty, best_strat)
                 position_manager.open_position(pos)
 
-    # 13. Metric computations
+    # 14. Close positions for EXIT signals
+    for ticker in UNIVERSE:
+        if actions.get(ticker) == "EXIT" and ticker in held_tickers:
+            exit_price = theo_prices.get(ticker, 0.0)
+            if exit_price > 0:
+                position_manager.close_position(ticker, exit_price, reason="BB_EXIT")
+                print(f"[PositionManager] BB EXIT: {ticker} @ ${exit_price:.2f}")
+
+    # 15. Metric computations
     shortfall = broker.calculate_shortfall(UNIVERSE, safe_weights, theo_prices, results)
     total_commission = sum(r.commission for r in results.values())
     total_slippage = sum(r.slippage_bps for r in results.values()) / max(len(results), 1)
     print(f"[Pipeline] Trade complete. Shortfall: {shortfall:.2f} bps, "
           f"Avg slippage: {total_slippage:.1f} bps, Commission: ${total_commission:.2f}")
 
-    # 14. Log decision to database
+    # 16. Log decision to database
+    model_version = "consensus_bb_v1"
     db_manager.log_decision_orm(
         timestamp=datetime.now(timezone.utc).isoformat(),
         ticker_universe=UNIVERSE,
@@ -314,7 +340,7 @@ def main_us_live_loop():
         trade_reasoning=trade_reasoning_map,
     )
 
-    # 15. Log daily P&L
+    # 17. Log daily P&L
     try:
         daily_pnl = position_manager.get_daily_pnl()
         from src.db.models import DailyPnL
@@ -354,7 +380,12 @@ def main_us_live_loop():
     except Exception as e:
         print(f"[DailyPnL] Failed to log: {e}")
 
+    # Summary
+    enter_count = sum(1 for a in actions.values() if a == "ENTER")
+    exit_count = sum(1 for a in actions.values() if a == "EXIT")
+    hold_count = sum(1 for a in actions.values() if a == "HOLD")
     print(f"[DB] Decision logged. model={model_version}  cb={cb_reason}")
+    print(f"[Summary] ENTER={enter_count} EXIT={exit_count} HOLD={hold_count} | Orders={len(results)}")
     print("=" * 60)
 
 
@@ -368,30 +399,18 @@ if __name__ == "__main__":
         main_us_live_loop()
     else:
         print("Starting APScheduler Daemon (US Markets)...")
-        print("AegisQuant US is armed. Pipeline runs every 20 minutes from 09:35 to 15:50 ET (Mon-Fri).")
+        print("AegisQuant US is armed. Pipeline runs every 30 minutes from 09:35 to 15:50 ET (Mon-Fri).")
         from apscheduler.schedulers.blocking import BlockingScheduler
 
         scheduler = BlockingScheduler()
 
-        # Run every 20 minutes during US market hours (9:35 AM – 3:40 PM ET)
-        # Fires: :35, :55, :15 each hour from 9 to 14, then 15:35 as last run
+        # Run every 30 minutes during US market hours (9:35 AM – 3:50 PM ET)
         scheduler.add_job(
             main_us_live_loop,
             'cron',
             day_of_week='mon-fri',
-            hour='9-14',
-            minute='35,55,15',
-            timezone='US/Eastern',
-            max_instances=1,
-            coalesce=True,
-        )
-        # Final fire at 15:35 — last decision before 4:00 PM close
-        scheduler.add_job(
-            main_us_live_loop,
-            'cron',
-            day_of_week='mon-fri',
-            hour=15,
-            minute=35,
+            hour='9-15',
+            minute='5,35',
             timezone='US/Eastern',
             max_instances=1,
             coalesce=True,

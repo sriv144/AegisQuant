@@ -114,7 +114,7 @@ Interpret:
 Produce a JSON output matching this schema exactly:
 {{
     "agent_name": "Macro_Research_Agent",
-    "action": "PROPOSE_LONG" | "PROPOSE_SHORT" | "HOLD",
+    "action": "PROPOSE_LONG" | "HOLD",
     "confidence": <float between 0.0 and 1.0>,
     "rationale": "<concise explanation referencing the actual indicator values>"
 }}
@@ -126,13 +126,13 @@ Produce a JSON output matching this schema exactly:
         confidence = 0.25
         rationale = "Fallback macro signal remains neutral."
         if isinstance(vix, (int, float)) and vix >= 25:
-            action = "PROPOSE_SHORT"
-            confidence = 0.65
-            rationale = "Elevated VIX indicates a risk-off regime."
+            action = "HOLD"
+            confidence = 0.30
+            rationale = "Elevated VIX indicates a risk-off regime — staying flat (long-only mode)."
         elif isinstance(slope, (int, float)) and slope < 0:
-            action = "PROPOSE_SHORT"
-            confidence = 0.58
-            rationale = "An inverted yield curve suggests macro stress."
+            action = "HOLD"
+            confidence = 0.25
+            rationale = "An inverted yield curve suggests macro stress — staying flat (long-only mode)."
 
         fallback = {
             "agent_name": self.name,

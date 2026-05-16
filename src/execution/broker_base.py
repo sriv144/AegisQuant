@@ -113,25 +113,63 @@ class BaseBroker(ABC):
         trade_types: Optional[Dict[str, str]] = None,
     ) -> Dict[str, OrderResult]:
         """
-        High-level weight executor. Translates target weights into orders.
-        This default implementation works for any broker — override only if needed.
+        Delta-based weight executor. Queries current broker positions and only
+        trades the difference between target and current holdings.
+
+        Long-only: only BUY (increase) or SELL (decrease/exit), never short-sell.
+        Skips trades where |delta| < 0.5% of portfolio value (noise filter).
 
         Returns: Dict[ticker -> OrderResult]
         """
         assert len(target_weights) == len(tickers), "Weight array dimension mismatch"
         results = {}
 
+        # Build current position map from broker
+        current_positions = {}
+        try:
+            positions = self.get_positions()
+            for pos in positions:
+                sym = pos.get("ticker", pos.get("symbol", ""))
+                qty = int(pos.get("qty", 0))
+                if sym and qty != 0:
+                    current_positions[sym] = qty
+        except Exception:
+            pass  # If broker doesn't support get_positions, treat as empty
+
+        noise_threshold = portfolio_value * 0.005  # 0.5% of portfolio
+
         for i, ticker in enumerate(tickers):
             weight = float(target_weights[i])
             price = theoretical_prices.get(ticker, 0.0)
             product_str = (trade_types or {}).get(ticker, "CNC")
 
-            if abs(weight) < 0.001 or price <= 0:
+            if price <= 0:
                 continue
 
-            target_notional = portfolio_value * abs(weight)
-            qty = max(1, int(target_notional / price))
-            side = OrderSide.BUY if weight > 0 else OrderSide.SELL
+            # Target qty from weight
+            target_notional = portfolio_value * max(0.0, weight)  # long-only: floor at 0
+            target_qty = int(target_notional / price) if price > 0 else 0
+
+            # Current qty from broker
+            current_qty = current_positions.get(ticker, 0)
+
+            # Delta
+            delta_qty = target_qty - current_qty
+
+            # Skip if delta is noise (< 0.5% of portfolio)
+            delta_value = abs(delta_qty * price)
+            if delta_value < noise_threshold:
+                continue
+
+            # Determine side — long-only: BUY to increase, SELL to decrease
+            if delta_qty > 0:
+                side = OrderSide.BUY
+                qty = delta_qty
+            elif delta_qty < 0:
+                side = OrderSide.SELL
+                qty = abs(delta_qty)
+            else:
+                continue
 
             try:
                 product = ProductType[product_str] if product_str in ProductType.__members__ else ProductType.CNC

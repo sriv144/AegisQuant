@@ -154,7 +154,7 @@ class PMAgent(BaseAgent):
         """
         
         if rl_weight_suggestion is not None:
-            prompt += f"\n\nCRITICAL: The RL Strategy Optimizer algorithm has mathematically determined the optimal target exposure weight for this asset is {rl_weight_suggestion:.4f} (where negative means short, positive means long). You MUST adopt this exposure weight. Provide the rationale justifying this mathematical model choice."
+            prompt += f"\n\nAdvisory: The RL Strategy Optimizer suggests a target exposure weight of {rl_weight_suggestion:.4f}. Consider this as one input among many, but make your own sizing decision based on the committee signal strength and risk constraints."
         else:
             prompt += "\n\nDetermine the sizing or allocation percentage based on your LLM intuition."
             
@@ -182,14 +182,18 @@ class PMAgent(BaseAgent):
         }
 
         decision = self._invoke_llm_json(prompt, fallback)
-        
-        # Override target exposure physically to guarantee the RL agent runs the show if available
-        if rl_weight_suggestion is not None:
+
+        # RL override: only if USE_RL_OVERRIDE=true (default: disabled)
+        # When disabled, RL weight is advisory-only metadata — consensus engine drives allocation
+        use_rl_override = os.getenv("USE_RL_OVERRIDE", "false").lower() == "true"
+        if rl_weight_suggestion is not None and use_rl_override:
             decision["target_exposure_pct"] = round(abs(float(rl_weight_suggestion)), 4)
-            # The direction is technically derived from the sign, but the Committee sets Direction 
-            # in our pipeline. We can pass the sign into the metadata to ensure overrides.
             decision["rl_direction"] = "LONG" if rl_weight_suggestion >= 0 else "SHORT"
-            
+            print(f"[{self.name}] RL OVERRIDE active — forcing exposure to {decision['target_exposure_pct']:.4f}")
+        elif rl_weight_suggestion is not None:
+            # Store RL suggestion as metadata only
+            decision["rl_advisory_weight"] = round(float(rl_weight_suggestion), 4)
+
         return {"allocation_request": decision}
 
 pm_agent = PMAgent()

@@ -24,7 +24,7 @@ class SentimentAgent(BaseAgent):
         Produce a JSON output matching this schema:
         {{
             "agent_name": "Sentiment_Research_Agent",
-            "action": "PROPOSE_LONG" | "PROPOSE_SHORT" | "HOLD",
+            "action": "PROPOSE_LONG" | "HOLD",
             "confidence": float (0.0 to 1.0),
             "rationale": "A concise explanation of the sentiment signal."
         }}
@@ -40,9 +40,9 @@ class SentimentAgent(BaseAgent):
                 confidence = min(0.75, 0.35 + abs(float(sentiment)))
                 rationale = "Positive aggregate sentiment supports a long bias."
             elif sentiment <= -0.2:
-                action = "PROPOSE_SHORT"
-                confidence = min(0.75, 0.35 + abs(float(sentiment)))
-                rationale = "Negative aggregate sentiment supports a short bias."
+                action = "HOLD"
+                confidence = 0.25
+                rationale = "Negative aggregate sentiment — staying flat (long-only mode)."
 
         fallback = {
             "agent_name": self.name,
