@@ -9,10 +9,9 @@ from typing import Dict, Any
 
 
 def _score_to_action(score: float) -> str:
+    """Long-only: positive score → PROPOSE_LONG, else HOLD (no shorts)."""
     if score >= 0.15:
         return "PROPOSE_LONG"
-    if score <= -0.15:
-        return "PROPOSE_SHORT"
     return "HOLD"
 
 class QuantAgent:

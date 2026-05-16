@@ -49,20 +49,33 @@ IST = timezone(timedelta(hours=5, minutes=30))  # keep for backward compat
 ET = timezone(timedelta(hours=-5))              # keep for backward compat
 MARKET_TZ = _ET if MARKET == "US" else _IST
 
-class MaxPositionRule:
-    def __init__(self, max_weight: float = 0.95):
-        self.max_weight = max_weight
-        
+class LongOnlyRule:
+    """Zeroes any negative weights — enforces long-only + flat (no shorts)."""
+
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
-        """Caps the absolute weight of any single position."""
         modified = False
         safe_weights = target_weights.copy()
-        
+        for i, w in enumerate(safe_weights):
+            if w < 0:
+                safe_weights[i] = 0.0
+                modified = True
+        return safe_weights, modified
+
+
+class MaxPositionRule:
+    def __init__(self, max_weight: float = 0.10):
+        self.max_weight = max_weight
+
+    def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
+        """Caps the absolute weight of any single position (default 10%)."""
+        modified = False
+        safe_weights = target_weights.copy()
+
         for i, w in enumerate(safe_weights):
             if abs(w) > self.max_weight:
                 safe_weights[i] = np.sign(w) * self.max_weight
                 modified = True
-                
+
         return safe_weights, modified
 
 
@@ -110,6 +123,10 @@ class TimeWindowRule:
 
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """Prevents trading outside market hours or on holidays."""
+        # Allow bypassing for testing: SKIP_TIME_CHECK=true
+        if os.getenv("SKIP_TIME_CHECK", "false").lower() == "true":
+            return target_weights, False
+
         now = _now_market()
         curr_time = now.time()
         curr_date = now.date()
@@ -207,9 +224,10 @@ class MISAutoCloseRule:
 class ExecutionFailsafe:
     def __init__(self):
         self.rules = [
+            LongOnlyRule(),                           # FIRST: enforce no shorts
             DrawdownCircuitBreaker(max_drawdown=0.20),
             VolatilityCircuitBreaker(vix_threshold=60.0),
-            MaxPositionRule(max_weight=0.95),
+            MaxPositionRule(max_weight=0.10),          # Max 10% per ticker
             TimeWindowRule(),
             PositionStopLossRule(),
             MISAutoCloseRule(),

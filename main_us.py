@@ -1,20 +1,26 @@
 """
-US Live Trading Loop (Professional Multi-Mode Trader)
+US Live Trading Loop (Agent-Driven Autonomous Trader)
 ======================================================
-Runs the dynamic multi-strategy RL pipeline on US markets with Alpaca.
-- Dynamic universe screening (S&P 500 + growth stocks)
-- Dual-mode trading: 80% swing (GTC) + 20% intraday (DAY orders)
-- Position management with stop-loss, take-profit, and aging exits
-- RL meta-learner for optimal intraday/swing split
-Scheduled for 9:35 AM ET (market open + 5 min) on weekdays.
+Every 30-min cycle:
+  1. Screen universe (~30 US stocks)
+  2. Fetch technical indicators + sentiment for each
+  3. Run 4 research agents per ticker (quant, fundamental, macro, sentiment)
+  4. Run 9 strategies per ticker (momentum, mean reversion, trend, etc.)
+  5. Trading Analyst (LLM) reasons about each ticker using ALL data,
+     picks the right approach, and decides BUY / HOLD / EXIT with reasoning
+  6. Weight engine: rank, diversify (max 10%/ticker, 15 positions), allocate
+  7. Circuit breakers: long-only, max position, drawdown, market hours
+  8. Delta execution: only trade the difference vs current Alpaca positions
+
+The agents THINK. They don't follow rigid rules — they reason about each
+stock's situation and explain WHY they're making each decision.
 
 Set these env vars:
-  MARKET=US
-  BROKER=alpaca  (or 'paper' for simulation)
-  ALPACA_API_KEY=...
-  ALPACA_SECRET_KEY=...
-  ALPACA_BASE_URL=https://paper-api.alpaca.markets  (paper trading)
-  INITIAL_CAPITAL=100000  (default $100K for US paper)
+  MARKET=US  BROKER=alpaca
+  ALPACA_API_KEY=...  ALPACA_SECRET_KEY=...
+  ALPACA_BASE_URL=https://paper-api.alpaca.markets
+  INITIAL_CAPITAL=100000
+  OPENAI_API_KEY=...  (for LLM reasoning — falls back to heuristics without it)
 """
 
 import os
@@ -25,8 +31,9 @@ os.environ.setdefault("MARKET", "US")
 from datetime import datetime, timezone, timedelta
 import numpy as np
 import pandas as pd
+import logging
 
-from src import config  # noqa: F401  # Ensures .env is loaded
+from src import config  # noqa: F401
 from src.execution import get_broker
 from src.execution.broker_base import BaseBroker
 from src.data.us_market_data import us_market_data
@@ -36,14 +43,21 @@ from src.data.us_universe_screener import us_universe_screener
 from src.engine.circuit_breakers import ExecutionFailsafe
 from src.engine.position_manager import position_manager, Position
 from src.engine.capital_allocator import capital_allocator
-from src.agents.orchestrator import orchestrator
-from src.agents.state import AgentState
-from src.agents.portfolio.pm_agent import pm_agent
+from src.engine.consensus_weight_engine import ConsensusWeightEngine
+from src.strategies import STRATEGY_REGISTRY
+from src.agents.research.quant_agent import quant_agent
+from src.agents.research.fundamental_agent import fundamental_agent
+from src.agents.research.macro_agent import macro_agent
+from src.agents.research.sentiment_agent import sentiment_agent
+from src.agents.analyst.trading_analyst import trading_analyst
 from src.db.models import db_manager
 
-_failsafe = ExecutionFailsafe()
+logger = logging.getLogger(__name__)
 
-INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))  # $100K USD paper capital
+_failsafe = ExecutionFailsafe()
+_weight_engine = ConsensusWeightEngine(max_positions=15, max_per_ticker=0.10)
+
+INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))
 
 
 def _fetch_vix() -> float:
@@ -54,7 +68,6 @@ def _fetch_vix() -> float:
 def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices: dict) -> dict:
     """
     Compute real portfolio state from DB-tracked positions and realized P&L.
-    No more hardcoded values — portfolio_value changes as trades win/lose.
     """
     vix = _fetch_vix()
     current_weights = np.zeros(len(tickers))
@@ -65,9 +78,9 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
 
     mode_label = broker.__class__.__name__
     print(
-        f"[LiveState] {mode_label} mode — portfolio_value=${portfolio_value:,.0f}  "
-        f"realized=${pf['realized_pnl']:,.0f}  unrealized=${pf['unrealized_pnl']:,.0f}  "
-        f"cash=${pf['cash_balance']:,.0f}  positions={pf['open_position_count']}"
+        f"[LiveState] {mode_label} — ${portfolio_value:,.0f} "
+        f"(realized=${pf['realized_pnl']:,.0f} unrealized=${pf['unrealized_pnl']:,.0f} "
+        f"cash=${pf['cash_balance']:,.0f} positions={pf['open_position_count']})"
     )
     print(f"[LiveState] drawdown={drawdown:.4f}  VIX={vix:.2f}  peak=${pf['peak_equity']:,.0f}")
 
@@ -79,79 +92,80 @@ def _get_live_portfolio_state(broker: BaseBroker, tickers: list, current_prices:
     }
 
 
-def _fetch_weekly_strategy_scores() -> dict:
-    """
-    Compute per-strategy performance scores from realized trades in the last 30 days.
-    """
+def _get_held_tickers(broker: BaseBroker) -> set:
+    """Query broker + DB for currently held positions."""
+    held = set()
     try:
-        from sqlalchemy import text
-        db_url = os.getenv("POSTGRES_URL", "sqlite:///aegisquant_live.db")
-        from sqlalchemy import create_engine
-        engine = create_engine(db_url)
-
-        query = text("""
-            SELECT strategy,
-                   COUNT(*) as trade_count,
-                   AVG(pnl_pct) as avg_pnl,
-                   SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
-            FROM open_positions
-            WHERE status = 'CLOSED'
-              AND exit_date > datetime('now', '-30 days')
-              AND pnl_pct IS NOT NULL
-            GROUP BY strategy
-            ORDER BY avg_pnl DESC
-        """)
-
-        with engine.connect() as conn:
-            result = conn.execute(query)
-            rows = result.fetchall()
-
-        if not rows:
-            return _default_strategy_scores()
-
-        scores = {}
-        for row in rows:
-            strategy, trade_count, avg_pnl, wins = row
-            win_rate = wins / trade_count if trade_count > 0 else 0.0
-            scores[strategy] = round(avg_pnl * 100 + win_rate * 10, 2)
-
-        print(f"[Strategy Scores] {len(scores)} strategies scored from {sum(r[1] for r in rows)} trades")
-        return scores
-
+        for pos in broker.get_positions():
+            sym = pos.get("ticker", pos.get("symbol", ""))
+            if sym and int(pos.get("qty", 0)) > 0:
+                held.add(sym)
     except Exception as e:
-        print(f"[Strategy Scores] Query failed ({e}), using defaults")
-        return _default_strategy_scores()
+        print(f"[Positions] Broker query failed: {e}")
+
+    try:
+        for ticker in position_manager.get_open_positions():
+            held.add(ticker)
+    except Exception:
+        pass
+
+    return held
 
 
-def _default_strategy_scores() -> dict:
-    """Fallback scores — equal weight across core strategies."""
-    return {
-        "momentum": 0.0,
-        "mean_reversion": 0.0,
-        "trend_following": 0.0,
-        "factor_investing": 0.0,
-        "volatility_breakout": 0.0,
-        "earnings_momentum": 0.0,
-        "sector_rotation": 0.0,
-        "gap_fill": 0.0,
-        "pairs_trading": 0.0,
+def _run_research_agents(ticker: str, indicators: dict, alt_data: dict, portfolio_state: dict) -> list:
+    """Run all 4 research agents for a single ticker."""
+    state = {
+        "current_asset": ticker,
+        "technical_indicators": indicators,
+        "alternative_data": alt_data,
+        "portfolio_state": portfolio_state,
+        "research_signals": [],
     }
+
+    signals = []
+    for agent in [quant_agent, fundamental_agent, macro_agent, sentiment_agent]:
+        try:
+            result = agent.invoke(state)
+            signals.extend(result.get("research_signals", []))
+        except Exception as e:
+            print(f"  [{ticker}] Agent {getattr(agent, 'name', '?')} failed: {e}")
+
+    return signals
+
+
+def _run_all_strategies(ticker: str, indicators: dict, portfolio_state: dict, alt_data: dict) -> list:
+    """Run all 9 strategies for a single ticker."""
+    signals = []
+    for name, strategy in STRATEGY_REGISTRY.items():
+        try:
+            signal = strategy.generate_signal(
+                ticker=ticker,
+                indicators=indicators,
+                portfolio_state=portfolio_state,
+                alt_data=alt_data,
+            )
+            signals.append(signal)
+        except Exception as e:
+            print(f"  [{ticker}] Strategy {name} failed: {e}")
+    return signals
 
 
 def main_us_live_loop():
-    print(f"\n[{datetime.now()}] [US Pipeline] Waking up. Initiating daily RL execution cycle...")
+    print(f"\n{'='*60}")
+    print(f"[{datetime.now()}] [AegisQuant] Agent-driven trading cycle starting...")
+    print(f"{'='*60}")
 
-    # 1. Refresh universe
-    print("[Pipeline] Screening universe...")
+    # ── Phase 1: Universe Screening ──────────────────────────────
+    print("\n[Phase 1] Screening universe...")
     UNIVERSE = us_universe_screener.screen_universe()
-    print(f"[Pipeline] Selected {len(UNIVERSE)} tickers from dynamic screening")
+    print(f"  Selected {len(UNIVERSE)} tickers: {', '.join(UNIVERSE[:10])}{'...' if len(UNIVERSE) > 10 else ''}")
 
-    # 2. Broker (auto-selects Alpaca/PaperBroker from env config)
+    # ── Phase 2: Connect Broker ──────────────────────────────────
     broker = get_broker()
     broker.connect()
 
-    # 3. Position manager: close any SL/TP/aged positions FIRST
-    print("[Pipeline] Checking position exits (SL/TP/aging)...")
+    # ── Phase 3: Position Management ─────────────────────────────
+    print("\n[Phase 3] Checking position exits (SL/TP/aging)...")
     theo_prices = {}
     for tick in UNIVERSE:
         theo_prices[tick] = us_market_data.get_latest_quote(tick)
@@ -159,17 +173,14 @@ def main_us_live_loop():
     exits = position_manager.daily_check(theo_prices)
     for ticker in exits:
         position_manager.close_position(ticker, theo_prices[ticker], reason="EXIT_SIGNAL")
-        print(f"[PositionManager] Closed {ticker}")
+        print(f"  Closed {ticker} (exit signal)")
 
-    # 4. Build live portfolio state (uses DB-tracked P&L)
+    # ── Phase 4: Portfolio State ─────────────────────────────────
     portfolio_state = _get_live_portfolio_state(broker, UNIVERSE, theo_prices)
-
-    # 5. Capital allocator: compute intraday vs swing budgets
     intraday_budget, delivery_budget = capital_allocator.get_budgets(portfolio_state)
-    print(f"[CapitalAllocator] Budgets: ${intraday_budget:,.0f} intraday, ${delivery_budget:,.0f} swing")
 
-    # 6. Pre-compute technical indicators + sentiment
-    print("[Pipeline] Pre-computing technical indicators and sentiment signals...")
+    # ── Phase 5: Data Collection ─────────────────────────────────
+    print("\n[Phase 5] Computing indicators + sentiment for all tickers...")
     ticker_indicators = {}
     ticker_alt_data = {}
     hist_start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -180,7 +191,10 @@ def main_us_live_loop():
         if hist and len(hist) >= 20:
             df_feat = feature_engineer.compute_technical_indicators(hist)
             latest = df_feat.iloc[-1]
-            ticker_indicators[ticker] = {k: float(v) for k, v in latest.items() if pd.notna(v) and isinstance(v, (int, float, np.number))}
+            ticker_indicators[ticker] = {
+                k: float(v) for k, v in latest.items()
+                if pd.notna(v) and isinstance(v, (int, float, np.number))
+            }
         else:
             ticker_indicators[ticker] = {}
 
@@ -192,76 +206,77 @@ def main_us_live_loop():
             "news_volume": agg.get("news_volume", 0),
         }
 
-    # 7. Fetch weekly strategy scores
-    strategy_scores = _fetch_weekly_strategy_scores()
+    held_tickers = _get_held_tickers(broker)
+    print(f"  Currently holding {len(held_tickers)} positions: {sorted(held_tickers) if held_tickers else 'none'}")
 
-    # 8. Run the full LangGraph agent pipeline per ticker
-    print("[Pipeline] Running LLM consensus + PPO inference via agent orchestrator...")
-    target_weights = np.zeros(len(UNIVERSE))
-    trade_types = {}
+    # ── Phase 6: Research Agents ─────────────────────────────────
+    print("\n[Phase 6] Research agents analyzing all tickers...")
+    all_agent_signals = {}
+    for ticker in UNIVERSE:
+        signals = _run_research_agents(
+            ticker, ticker_indicators[ticker], ticker_alt_data[ticker], portfolio_state
+        )
+        all_agent_signals[ticker] = signals
+
+    # ── Phase 7: Strategy Signals ────────────────────────────────
+    print("\n[Phase 7] Running 9 strategies across all tickers...")
+    all_strategy_signals = {}
+    for ticker in UNIVERSE:
+        signals = _run_all_strategies(
+            ticker, ticker_indicators[ticker], portfolio_state, ticker_alt_data[ticker]
+        )
+        all_strategy_signals[ticker] = signals
+
+    # ── Phase 8: Trading Analyst (THE CORE) ──────────────────────
+    print("\n[Phase 8] Trading Analyst reasoning about each ticker...")
+    llm_mode = "LLM" if trading_analyst.llm is not None else "FALLBACK (no OPENAI_API_KEY)"
+    print(f"  Mode: {llm_mode}")
+
+    analyst_decisions = {}
+    for ticker in UNIVERSE:
+        decision = trading_analyst.analyze_ticker(
+            ticker=ticker,
+            indicators=ticker_indicators[ticker],
+            agent_signals=all_agent_signals[ticker],
+            strategy_signals=all_strategy_signals[ticker],
+            portfolio_state=portfolio_state,
+            is_held=(ticker in held_tickers),
+            current_price=theo_prices.get(ticker, 0.0),
+        )
+        analyst_decisions[ticker] = decision
+
+    # ── Phase 9: Weight Allocation ───────────────────────────────
+    print("\n[Phase 9] Computing portfolio weights...")
+    target_weights, actions = _weight_engine.compute_target_weights(
+        tickers=UNIVERSE,
+        analyst_decisions=analyst_decisions,
+    )
+
+    # Build reasoning map for DB
     trade_reasoning_map = {}
-    model_version = "us_orchestrator_fallback"
-
     for i, ticker in enumerate(UNIVERSE):
-        initial_state: AgentState = {
-            "current_asset": ticker,
-            "timestamp": datetime.now().isoformat(),
-            "market_data": {"ticker": ticker, "price": theo_prices.get(ticker, 0.0)},
-            "alternative_data": ticker_alt_data[ticker],
-            "technical_indicators": ticker_indicators[ticker],
-            "active_strategies": sorted(strategy_scores, key=strategy_scores.get, reverse=True)[:5],
-            "strategy_scores": strategy_scores,
-            "current_strategy": max(strategy_scores, key=strategy_scores.get) if strategy_scores else "momentum",
-            "trade_type": "SKIP",
-            "stop_loss_pct": 0.08,
-            "take_profit_pct": 0.20,
-            "intraday_budget": intraday_budget,
-            "delivery_budget": delivery_budget,
-            "research_signals": [],
-            "committee_decision": {},
-            "allocation_request": {},
-            "risk_approval": {},
-            "execution_result": {},
-            "portfolio_state": portfolio_state,
-        }
-        final_state = orchestrator.run_cycle(initial_state)
-
-        allocation = final_state.get("allocation_request", {})
-        exposure = float(allocation.get("adjusted_exposure_pct") or allocation.get("target_exposure_pct") or 0.0)
-        committee_dir = final_state.get("committee_decision", {}).get("direction", "LONG")
-        target_weights[i] = exposure if committee_dir != "SHORT" else -exposure
-
-        trade_type = final_state.get("trade_type", "SKIP")
-        trade_types[ticker] = trade_type
-
-        signals = final_state.get("research_signals", [])
-        committee = final_state.get("committee_decision", {})
-        risk = final_state.get("risk_approval", {})
+        decision = analyst_decisions.get(ticker, {})
         trade_reasoning_map[ticker] = {
-            "research_signals": [
-                {"agent": s.get("agent_name", "unknown"), "action": s.get("action", ""), "rationale": s.get("rationale", "")}
-                for s in signals
+            "analyst_action": decision.get("action", "HOLD"),
+            "analyst_confidence": decision.get("confidence", 0),
+            "analyst_reasoning": decision.get("reasoning", ""),
+            "strategy_used": decision.get("strategy_used", ""),
+            "used_llm": decision.get("used_llm", False),
+            "target_weight": round(float(target_weights[i]), 4),
+            "agent_signals": [
+                {"agent": s.get("agent_name", "?"), "action": s.get("action", ""), "confidence": s.get("confidence", 0)}
+                for s in all_agent_signals.get(ticker, [])
             ],
-            "committee": {"action": committee.get("action", ""), "direction": committee.get("direction", ""), "rationale": committee.get("rationale", "")},
-            "allocation": {"exposure_pct": exposure, "rationale": allocation.get("rationale", "")},
-            "risk": {"action": risk.get("action", ""), "rationale": risk.get("rationale", "")},
-            "trade_type": trade_type,
+            "strategy_signals": [
+                {"strategy": s.get("strategy", "?"), "action": s.get("action", ""), "confidence": s.get("confidence", 0)}
+                for s in all_strategy_signals.get(ticker, [])
+            ],
         }
 
-        if trade_type != "SKIP":
-            print(f"  [{ticker}] {trade_type} @ {exposure*100:.1f}%")
+    print(f"  Target Weights -> {target_weights.round(3)}")
 
-    if pm_agent.rl_model is not None:
-        model_version = "us_ppo_rl_live"
-
-    # 9. Normalize to gross exposure constraint (1.5)
-    gross = np.sum(np.abs(target_weights))
-    if gross > 1.5:
-        target_weights = target_weights * (1.5 / gross)
-
-    print(f"[Pipeline] Raw RL Weights -> {target_weights.round(3)}")
-
-    # 10. Run circuit breakers with live state
+    # ── Phase 10: Circuit Breakers ───────────────────────────────
+    trade_types = {t: "CNC" for t in UNIVERSE}
     cb_state = {
         "drawdown": portfolio_state["current_drawdown"],
         "vix_raw": portfolio_state["vix_raw"],
@@ -272,10 +287,11 @@ def main_us_live_loop():
     }
     safe_weights, cb_reason = _failsafe.process_action(target_weights, cb_state)
     if cb_reason != "OK":
-        print(f"[CircuitBreaker] TRIGGERED: {cb_reason}. Weights adjusted.")
-    print(f"[Pipeline] Safe Weights -> {safe_weights.round(3)}")
+        print(f"  [CircuitBreaker] {cb_reason}")
+    print(f"  Safe Weights -> {safe_weights.round(3)}")
 
-    # 11. Fire to execution via broker abstraction layer
+    # ── Phase 11: Execution ──────────────────────────────────────
+    print("\n[Phase 11] Executing trades (delta-based)...")
     results = broker.execute_target_weights(
         tickers=UNIVERSE,
         target_weights=safe_weights,
@@ -284,24 +300,31 @@ def main_us_live_loop():
         trade_types=trade_types,
     )
 
-    # 12. Log positions for swing trades using actual fill prices
+    # Log new positions
     for i, ticker in enumerate(UNIVERSE):
-        if trade_types.get(ticker) == "CNC" and safe_weights[i] != 0:
-            strategy = initial_state.get("current_strategy", "momentum")
+        if actions.get(ticker) == "BUY" and safe_weights[i] > 0:
             result = results.get(ticker)
             if result and result.filled_qty > 0:
                 fill_price = result.fill_price if result.fill_price > 0 else theo_prices[ticker]
+                strategy = analyst_decisions.get(ticker, {}).get("strategy_used", "analyst")
                 pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy)
                 position_manager.open_position(pos)
 
-    # 13. Metric computations
+    # Execute EXIT signals
+    for ticker in UNIVERSE:
+        if actions.get(ticker) == "EXIT" and ticker in held_tickers:
+            exit_price = theo_prices.get(ticker, 0.0)
+            if exit_price > 0:
+                reason = analyst_decisions.get(ticker, {}).get("reasoning", "Analyst EXIT")[:50]
+                position_manager.close_position(ticker, exit_price, reason="ANALYST_EXIT")
+                print(f"  EXIT {ticker} @ ${exit_price:.2f} — {reason}")
+
+    # ── Phase 12: Metrics & Logging ──────────────────────────────
     shortfall = broker.calculate_shortfall(UNIVERSE, safe_weights, theo_prices, results)
     total_commission = sum(r.commission for r in results.values())
-    total_slippage = sum(r.slippage_bps for r in results.values()) / max(len(results), 1)
-    print(f"[Pipeline] Trade complete. Shortfall: {shortfall:.2f} bps, "
-          f"Avg slippage: {total_slippage:.1f} bps, Commission: ${total_commission:.2f}")
+    avg_slippage = sum(r.slippage_bps for r in results.values()) / max(len(results), 1)
 
-    # 14. Log decision to database
+    model_version = "analyst_llm_v1" if trading_analyst.llm else "analyst_fallback_v1"
     db_manager.log_decision_orm(
         timestamp=datetime.now(timezone.utc).isoformat(),
         ticker_universe=UNIVERSE,
@@ -314,7 +337,7 @@ def main_us_live_loop():
         trade_reasoning=trade_reasoning_map,
     )
 
-    # 15. Log daily P&L
+    # Daily P&L
     try:
         daily_pnl = position_manager.get_daily_pnl()
         from src.db.models import DailyPnL
@@ -328,70 +351,65 @@ def main_us_live_loop():
 
         today = datetime.now().strftime("%Y-%m-%d")
         existing = session.query(DailyPnL).filter(DailyPnL.date == today).first()
-
-        total_pnl = daily_pnl["total_pnl"]
         if existing:
             existing.total_portfolio_value = portfolio_state["portfolio_value"]
             existing.intraday_pnl = daily_pnl["intraday_pnl"]
             existing.delivery_pnl = daily_pnl["delivery_pnl"]
-            existing.total_pnl = total_pnl
+            existing.total_pnl = daily_pnl["total_pnl"]
             existing.drawdown = portfolio_state["current_drawdown"]
             existing.intraday_ratio_used = capital_allocator.current_intraday_ratio
         else:
-            pnl_record = DailyPnL(
+            session.add(DailyPnL(
                 date=today,
                 total_portfolio_value=portfolio_state["portfolio_value"],
                 intraday_pnl=daily_pnl["intraday_pnl"],
                 delivery_pnl=daily_pnl["delivery_pnl"],
-                total_pnl=total_pnl,
+                total_pnl=daily_pnl["total_pnl"],
                 drawdown=portfolio_state["current_drawdown"],
                 intraday_ratio_used=capital_allocator.current_intraday_ratio,
-            )
-            session.add(pnl_record)
-
+            ))
         session.commit()
         session.close()
     except Exception as e:
-        print(f"[DailyPnL] Failed to log: {e}")
+        print(f"[DailyPnL] Failed: {e}")
 
-    print(f"[DB] Decision logged. model={model_version}  cb={cb_reason}")
-    print("=" * 60)
+    # ── Summary ──────────────────────────────────────────────────
+    buy_count = sum(1 for a in actions.values() if a == "BUY")
+    exit_count = sum(1 for a in actions.values() if a == "EXIT")
+    hold_count = sum(1 for a in actions.values() if a == "HOLD")
+
+    print(f"\n{'='*60}")
+    print(f"[SUMMARY] {model_version} | cb={cb_reason}")
+    print(f"  Decisions: BUY={buy_count}  HOLD={hold_count}  EXIT={exit_count}")
+    print(f"  Orders executed: {len(results)}")
+    print(f"  Shortfall: {shortfall:.2f} bps | Slippage: {avg_slippage:.1f} bps | Commission: ${total_commission:.2f}")
+    if buy_count > 0:
+        print(f"  Bought: {', '.join(t for t in UNIVERSE if actions.get(t) == 'BUY')}")
+    if exit_count > 0:
+        print(f"  Exited: {', '.join(t for t in UNIVERSE if actions.get(t) == 'EXIT')}")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--now", action="store_true", help="Execute immediately instead of waiting for next interval")
+    parser.add_argument("--now", action="store_true", help="Execute immediately")
     args = parser.parse_args()
 
     if args.now:
         main_us_live_loop()
     else:
         print("Starting APScheduler Daemon (US Markets)...")
-        print("AegisQuant US is armed. Pipeline runs every 20 minutes from 09:35 to 15:50 ET (Mon-Fri).")
+        print("AegisQuant armed. Pipeline runs every 30 minutes 9:35-15:50 ET (Mon-Fri).")
         from apscheduler.schedulers.blocking import BlockingScheduler
 
         scheduler = BlockingScheduler()
-
-        # Run every 20 minutes during US market hours (9:35 AM – 3:40 PM ET)
-        # Fires: :35, :55, :15 each hour from 9 to 14, then 15:35 as last run
         scheduler.add_job(
             main_us_live_loop,
             'cron',
             day_of_week='mon-fri',
-            hour='9-14',
-            minute='35,55,15',
-            timezone='US/Eastern',
-            max_instances=1,
-            coalesce=True,
-        )
-        # Final fire at 15:35 — last decision before 4:00 PM close
-        scheduler.add_job(
-            main_us_live_loop,
-            'cron',
-            day_of_week='mon-fri',
-            hour=15,
-            minute=35,
+            hour='9-15',
+            minute='5,35',
             timezone='US/Eastern',
             max_instances=1,
             coalesce=True,

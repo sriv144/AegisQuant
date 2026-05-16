@@ -155,14 +155,26 @@ class PositionManager:
 
     def open_position(self, position: Position) -> None:
         """
-        Open a new position.
+        Open a new position or update quantity if already open.
 
         Args:
-            position: Position object to open
+            position: Position object to open/update
         """
         if position.ticker in self._positions_cache:
-            logger.warning(f"[PositionManager] {position.ticker} already open, skipping")
-            return
+            existing = self._positions_cache[position.ticker]
+            if existing.status == "OPEN":
+                # Update quantity with cost-average
+                old_cost = existing.entry_price * existing.quantity
+                new_cost = position.entry_price * position.quantity
+                total_qty = existing.quantity + position.quantity
+                if total_qty > 0:
+                    existing.entry_price = round((old_cost + new_cost) / total_qty, 4)
+                    existing.quantity = total_qty
+                    self._persist_to_db(existing)
+                    logger.info(
+                        f"[PositionManager] Updated {position.ticker}: now {total_qty}x @ {existing.entry_price} (avg)"
+                    )
+                return
 
         self._positions_cache[position.ticker] = position
         self._persist_to_db(position)

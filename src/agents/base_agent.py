@@ -27,6 +27,7 @@ class BaseAgent:
                     "model": resolved_model,
                     "temperature": 0.2,
                     "api_key": api_key,
+                    "max_tokens": 1024,  # Keep responses concise, save credits
                 }
 
                 base_url = os.getenv("OPENAI_BASE_URL", "").strip()
