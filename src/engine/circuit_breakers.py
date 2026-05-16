@@ -123,6 +123,10 @@ class TimeWindowRule:
 
     def enforce(self, target_weights: np.ndarray, state: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """Prevents trading outside market hours or on holidays."""
+        # Allow bypassing for testing: SKIP_TIME_CHECK=true
+        if os.getenv("SKIP_TIME_CHECK", "false").lower() == "true":
+            return target_weights, False
+
         now = _now_market()
         curr_time = now.time()
         curr_date = now.date()
