@@ -8,3 +8,15 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Cruft from malformed pip install invocations (e.g. `pip install pkg=1.2.3`
+# instead of `pkg==1.2.3` creates an empty file literally named `=1.2.3`).
+=*
+
+# Captured pytest / script output that should not be committed.
+pytest_*.txt
+pcr.txt
+
+# Trained model artefacts at repo root - keep these in model_registry/
+# or a release artefact, not git.
+/*.zip
