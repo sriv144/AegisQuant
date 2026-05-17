@@ -11,6 +11,31 @@ The system structurally bridges the gap between pure ML research and financial d
 - **Phase 5**: Deep Streamlit UI projecting continuous SHAP permutations mapping exactly *why* the AI generated its signals.
 - **Phase 6**: SQLAlchemy audit trails and active SLACK/SMTP alerting loops.
 
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+    A["yfinance multi-asset OHLCV"] --> B["Phase 0-1<br/>Feature pipeline +<br/>regime HMM"]
+    B --> C["Phase 2-3<br/>Gym env (PPO/SAC)"]
+    C --> D{"Research committee"}
+    D --> E["fundamental_agent"]
+    D --> F["macro_agent"]
+    D --> G["quant_agent"]
+    D --> H["sentiment_agent"]
+    E --> I["OpenAI / OpenRouter consensus (existing)"]
+    F --> I
+    G --> I
+    H --> I
+    E -. opt-in .-> J["Claude consensus (Anthropic)"]
+    F -. opt-in .-> J
+    G -. opt-in .-> J
+    H -. opt-in .-> J
+    I --> K["Phase 4<br/>Alpaca execution"]
+    J --> K
+    C --> L["Phase 5<br/>Streamlit + SHAP"]
+    K --> M["Phase 6<br/>SQL audit, Slack/SMTP alerts"]
+```
+
 ## Installation
 
 ```bash
@@ -19,7 +44,7 @@ cd AegisQuant
 
 # 2. Install core library requirements
 pip install -r requirements.txt
-# (Includes stable-baselines3, gymnasium, shap, alpaca-py, streamlit, hmmlearn)
+# (Includes stable-baselines3, gymnasium, shap, alpaca-py, streamlit, hmmlearn, anthropic)
 
 # 3. Secure Env Vars
 cp .env.example .env
@@ -48,6 +73,36 @@ Launch the APScheduler heartbeat. Armed with `.env` keys, it will automatically 
 python main.py
 ```
 *To force immediate execution off schedule, run `python main.py --now`.*
+
+## LLM Consensus (Anthropic — Optional)
+
+The default research-committee path uses `langchain-openai` via
+`src/agents/base_agent.py` (also supports OpenRouter when the key starts with
+`sk-or-v1`). An additive **Claude-backed consensus scorer** lives in
+`src/agents/research/claude_consensus_scorer.py` and can cross-check the
+fundamental / macro / quant / sentiment slate before the executive agent
+commits to a direction:
+
+```python
+from src.agents.research.claude_consensus_scorer import score_consensus
+
+verdict = score_consensus(
+    ticker="AAPL",
+    proposals=[fundamental_out, macro_out, quant_out, sentiment_out],
+)
+# -> {"consensus": "BUY", "confidence": 0.72, "rationale": "...", "model": "claude-sonnet-4-6"}
+```
+
+Behaviour:
+
+- Returns a structured `ABSTAIN` dict when `ANTHROPIC_API_KEY` is unset, when
+  the `anthropic` package is not installed, or on any LLM / parse failure.
+- Never raises — safe to call unconditionally from the executive agent.
+- Defaults to `claude-sonnet-4-6`; override per call with the `model=` kwarg
+  or globally via the `ANTHROPIC_MODEL` env variable.
+
+The existing OpenAI / OpenRouter flow is untouched, so this is a pure
+additive upgrade rather than a replacement.
 
 ## System Testing
 The codebase is mapped heavily against `pytest`. Execute safety verifications before pushing model states up to Staging/Production:

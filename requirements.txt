@@ -25,3 +25,4 @@ statsmodels>=0.14.1
 
 hmmlearn>=0.3.2
 joblib>=1.3.2
+anthropic>=0.40.0
