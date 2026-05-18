@@ -1,10 +1,53 @@
+# --- Virtualenvs / Python caches ---
 .env
 .venv/
+.venv*/
+venv/
 __pycache__/
-.pytest_cache/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- App data / databases ---
 alert_history.jsonl
 trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# --- IDE ---
+.idea/
+.vscode/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+
+# --- pip side-effect files (e.g. an accidental `pip install foo =0.2.36`) ---
+# These show up as zero-byte files named '=0.X.Y' at the repo root.
+=*
+
+# --- Trained model artifacts (use model_registry/ + git-lfs if you must track) ---
+*.zip
+*.pt
+*.pth
+*.ckpt
+model_registry/
+!model_registry/.gitkeep
+
+# --- Run logs and ad-hoc dumps ---
+pytest_*.txt
+pcr.txt
+logs/
+backtest_results/
+!backtest_results/.gitkeep
+
+# --- Streamlit + APScheduler local state ---
+.streamlit/secrets.toml
+jobs.sqlite
