@@ -1,10 +1,21 @@
+# Environment
 .env
 .venv/
+
+# Python
 __pycache__/
 .pytest_cache/
 *.pyc
+
+# Databases and runtime logs
 alert_history.jsonl
 trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Stray build / test artifacts (see RESEARCH_LOG.md 2026-05-20)
+# Files named like version specifiers come from shell redirects such as
+# `pip install 'pkg>=1.0' > =1.0` and should never be tracked.
+=*
+pytest_*.txt
