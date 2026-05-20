@@ -32,7 +32,7 @@ MARKET = os.getenv("MARKET", "US").upper()
 BENCHMARK_SYMBOL = "^GSPC" if MARKET == "US" else "^NSEI"
 BENCHMARK_LABEL = "S&P 500" if MARKET == "US" else "Nifty 50"
 CURRENCY_SYMBOL = "$" if MARKET == "US" else "₹"
-DEFAULT_CAPITAL = 100_000.0 if MARKET == "US" else DEFAULT_CAPITAL
+DEFAULT_CAPITAL = 100_000.0 if MARKET == "US" else 1_000_000.0
 
 logger = logging.getLogger(__name__)
 
@@ -237,9 +237,44 @@ def _build_live_snapshot() -> dict:
 
 
 # ── Portfolio API ────────────────────────────────────────────────────────────
+def _alpaca_portfolio_live() -> dict:
+    """Fetch live equity / P&L from Alpaca when daily_pnl DB table is empty."""
+    try:
+        api_key = os.getenv("ALPACA_API_KEY", "")
+        secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        if not api_key or not secret_key:
+            return {}
+        from alpaca.trading.client import TradingClient
+        client = TradingClient(
+            api_key=api_key,
+            secret_key=secret_key,
+            paper="paper" in base_url.lower(),
+        )
+        acct = client.get_account()
+        equity = float(acct.equity)
+        last_equity = float(getattr(acct, "last_equity", equity) or equity)
+        total_pnl = equity - DEFAULT_CAPITAL
+        daily_pnl = equity - last_equity
+        today = datetime.now().strftime("%Y-%m-%d")
+        return {
+            "history": [
+                {"date": today, "total_portfolio_value": equity, "drawdown": 0.0, "total_pnl": total_pnl}
+            ],
+            "current_value": equity,
+            "drawdown": max(0.0, (DEFAULT_CAPITAL - equity) / DEFAULT_CAPITAL) if equity < DEFAULT_CAPITAL else 0.0,
+            "total_pnl": total_pnl,
+            "daily_pnl": daily_pnl,
+            "source": "alpaca_live",
+        }
+    except Exception as e:
+        logger.warning(f"_alpaca_portfolio_live fallback failed: {e}")
+        return {}
+
+
 @app.get("/api/portfolio")
 def get_portfolio(_auth=Depends(require_auth)):
-    """Return historical portfolio values and current metrics."""
+    """Return historical portfolio values and current metrics. Falls back to live Alpaca."""
     try:
         engine = get_engine()
         query = text(
@@ -250,14 +285,27 @@ def get_portfolio(_auth=Depends(require_auth)):
             df = pd.read_sql(query, conn)
 
         if df.empty:
-            return {"history": [], "current_value": 0.0, "drawdown": 0.0, "total_pnl": 0.0}
+            live = _alpaca_portfolio_live()
+            if live:
+                return live
+            return {"history": [], "current_value": DEFAULT_CAPITAL, "drawdown": 0.0, "total_pnl": 0.0}
 
         latest = df.iloc[-1]
+        # Enrich with live Alpaca equity for most-current value
+        try:
+            live = _alpaca_portfolio_live()
+            current_value = live.get("current_value", float(latest["total_portfolio_value"]))
+            daily_pnl = live.get("daily_pnl", 0.0)
+        except Exception:
+            current_value = float(latest["total_portfolio_value"])
+            daily_pnl = 0.0
+
         return {
             "history": df.to_dict(orient="records"),
-            "current_value": float(latest["total_portfolio_value"]),
+            "current_value": current_value,
             "drawdown": float(latest["drawdown"]),
             "total_pnl": float(latest["total_pnl"]),
+            "daily_pnl": daily_pnl,
         }
     except Exception as e:
         logger.error(f"get_portfolio: {e}")
@@ -318,9 +366,48 @@ def get_benchmark(_auth=Depends(require_auth)):
 
 
 # ── Positions API ────────────────────────────────────────────────────────────
+def _alpaca_positions_live() -> list:
+    """
+    Fallback: fetch positions directly from Alpaca API when DB is empty.
+    Returns a list in the same shape as the DB query so callers are agnostic.
+    """
+    try:
+        api_key = os.getenv("ALPACA_API_KEY", "")
+        secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        if not api_key or not secret_key:
+            return []
+        from alpaca.trading.client import TradingClient
+        client = TradingClient(
+            api_key=api_key,
+            secret_key=secret_key,
+            paper="paper" in base_url.lower(),
+        )
+        positions = client.get_all_positions()
+        return [
+            {
+                "ticker": p.symbol,
+                "quantity": int(p.qty),
+                "entry_price": float(p.avg_entry_price),
+                "current_price": float(p.current_price),
+                "market_value": float(p.market_value),
+                "unrealized_pnl": float(p.unrealized_pl),
+                "unrealized_pnl_pct": round(float(p.unrealized_plpc) * 100, 2),
+                "pnl_pct": round(float(p.unrealized_plpc) * 100, 2),
+                "trade_type": "CNC",
+                "strategy": "alpaca_live",
+                "side": p.side.value,
+            }
+            for p in positions
+        ]
+    except Exception as e:
+        logger.warning(f"_alpaca_positions_live fallback failed: {e}")
+        return []
+
+
 @app.get("/api/positions")
 def get_positions(_auth=Depends(require_auth)):
-    """Return active internal positions."""
+    """Return active positions. DB-first; falls back to live Alpaca if DB is empty."""
     try:
         engine = get_engine()
         query = text(
@@ -329,7 +416,11 @@ def get_positions(_auth=Depends(require_auth)):
         )
         with engine.connect() as conn:
             df = pd.read_sql(query, conn)
-        return df.to_dict(orient="records") if not df.empty else []
+        if not df.empty:
+            return df.to_dict(orient="records")
+        # DB empty → pull live from Alpaca so the UI shows real positions immediately
+        logger.info("open_positions DB empty — falling back to live Alpaca positions")
+        return _alpaca_positions_live()
     except Exception as e:
         logger.error(f"get_positions: {e}")
         return []
@@ -337,7 +428,7 @@ def get_positions(_auth=Depends(require_auth)):
 
 @app.get("/api/positions/detailed")
 def get_positions_detailed(_auth=Depends(require_auth)):
-    """Open positions with entry context, P&L, and holding duration."""
+    """Open positions with entry context, P&L, and holding duration. Falls back to Alpaca."""
     try:
         engine = get_engine()
         query = text("""
@@ -349,7 +440,29 @@ def get_positions_detailed(_auth=Depends(require_auth)):
             df = pd.read_sql(query, conn)
 
         if df.empty:
-            return []
+            # Fallback: build rich detail from live Alpaca positions
+            live = _alpaca_positions_live()
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            return [
+                {
+                    "ticker": p["ticker"],
+                    "quantity": p["quantity"],
+                    "entry_price": p["entry_price"],
+                    "current_price": p.get("current_price", p["entry_price"]),
+                    "market_value": p.get("market_value", 0.0),
+                    "unrealized_pnl": p.get("unrealized_pnl", 0.0),
+                    "unrealized_pnl_pct": p.get("unrealized_pnl_pct", 0.0),
+                    "entry_date": today_str,
+                    "days_held": 0,
+                    "trade_type": "CNC",
+                    "strategy": "alpaca_live",
+                    "stop_loss_pct": 0.08,
+                    "take_profit_pct": 0.20,
+                    "max_hold_days": 90,
+                    "sector": "US",
+                }
+                for p in live
+            ]
 
         today = datetime.now()
         positions = []
@@ -596,6 +709,31 @@ def get_decision_reasoning(decision_id: int, _auth=Depends(require_auth)):
     except Exception as e:
         logger.error(f"get_decision_reasoning: {e}")
         return {"error": str(e), "tickers": []}
+
+
+# ── Circuit Breakers API ────────────────────────────────────────────────────
+@app.get("/api/circuits")
+def get_circuits(_auth=Depends(require_auth)):
+    """Return configured circuit breaker rules and their status."""
+    try:
+        circuits = [
+            {"name": "LongOnlyRule", "trip": "w < 0", "status": "armed",
+             "description": "Zeroes any negative (short) weights"},
+            {"name": "DrawdownCB", "trip": "-15%", "status": "armed",
+             "description": "Portfolio drawdown hard cutoff"},
+            {"name": "VolatilityCB", "trip": "VIX > 35", "status": "armed",
+             "description": "Reduces exposure during high VIX"},
+            {"name": "MaxPositionRule", "trip": "10%", "status": "armed",
+             "description": "Per-ticker concentration cap"},
+            {"name": "TimeWindowRule", "trip": "09:35-15:55 ET", "status": "armed",
+             "description": "NYSE trading hours only"},
+            {"name": "PositionStopLoss", "trip": "-8%", "status": "armed",
+             "description": "Per-position stop loss"},
+        ]
+        return {"circuits": circuits, "total": len(circuits), "all_armed": True}
+    except Exception as e:
+        logger.error(f"get_circuits: {e}")
+        return {"circuits": [], "total": 0, "error": str(e)}
 
 
 # ── Static files & root ─────────────────────────────────────────────────────

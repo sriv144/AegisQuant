@@ -3,226 +3,417 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AegisQuant Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>AegisQuant Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <!-- ── LOGIN OVERLAY ── -->
+    <!-- LOGIN OVERLAY -->
     <div id="login-overlay" class="login-overlay" style="display:none">
         <div class="login-card">
-            <div class="logo-icon" style="margin:0 auto 16px;width:48px;height:48px;border-radius:12px"></div>
+            <div class="brand-mark-login">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
             <h2>AegisQuant</h2>
-            <p style="color:var(--text-secondary);margin-bottom:24px">Enter your dashboard password</p>
+            <p class="muted" style="margin-bottom:20px;font-size:12px">Enter your dashboard password</p>
             <input type="password" id="login-password" placeholder="Password" class="login-input" autofocus>
-            <button id="login-btn" class="login-btn">Sign In</button>
+            <button id="login-btn" class="btn primary" style="width:100%;margin-top:8px">Sign In</button>
             <p id="login-error" class="login-error" style="display:none">Invalid password</p>
         </div>
     </div>
 
-    <div class="app-container" id="app-container">
+    <div class="app" id="app">
+        <!-- SIDEBAR -->
         <aside class="sidebar">
-            <div class="logo-area">
-                <div class="logo-icon"></div>
-                <h2>AegisQuant</h2>
+            <div class="brand">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="color:var(--mint)">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="brand-name">AegisQuant</span>
             </div>
-            <nav class="nav-menu">
-                <a href="#" class="nav-item active" data-page="dashboard">Dashboard</a>
-                <a href="#" class="nav-item" data-page="positions">Positions</a>
-                <a href="#" class="nav-item" data-page="trades">Trade History</a>
-                <a href="#" class="nav-item" data-page="decisions">Decisions</a>
+            <nav class="nav">
+                <div class="nav-section">Trading desk</div>
+                <button class="nav-btn active" data-page="overview">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    <span>Overview</span>
+                    <span class="kbd">1</span>
+                </button>
+                <button class="nav-btn" data-page="trades">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a4 4 0 014 4c0 2-2 3-2 6h-4c0-3-2-4-2-6a4 4 0 014-4z"/><path d="M10 18h4M11 22h2"/></svg>
+                    <span>AI Trades</span>
+                    <span class="kbd">2</span>
+                </button>
+                <button class="nav-btn" data-page="positions">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 000 4h4v-4h-4z"/></svg>
+                    <span>Positions</span>
+                    <span class="kbd">3</span>
+                </button>
+
+                <div class="nav-section">Ops</div>
+                <button class="nav-btn" data-page="journal">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span>Order Journal</span>
+                    <span class="kbd">4</span>
+                </button>
+                <button class="nav-btn" data-page="circuits">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    <span>Circuit Breakers</span>
+                    <span class="kbd">5</span>
+                </button>
+                <button class="nav-btn" data-page="setup">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span>Alpaca Setup</span>
+                    <span class="kbd">6</span>
+                </button>
             </nav>
-            <div class="sidebar-footer">
-                <div id="ws-status" class="ws-badge ws-disconnected">WS Disconnected</div>
-                <div class="mode-badge" id="mode-badge">Paper Mode</div>
+            <div class="nav-footer">
+                <div style="display:flex;align-items:center;gap:6px">
+                    <span class="dot live"></span>
+                    <span>Pipeline <b class="bright">main_us.py</b></span>
+                </div>
+                <div class="mono muted" style="font-size:10.5px;margin-top:4px" id="footer-version">
+                    v1.0 &middot; agent-consensus &middot; paper
+                </div>
             </div>
         </aside>
 
-        <main class="main-content">
-            <!-- ── PAGE: DASHBOARD ── -->
-            <div id="page-dashboard" class="page active">
-                <header class="topbar">
-                    <h1>Overview</h1>
-                    <div class="user-profile">
-                        <span class="status-indicator"></span>
-                        <span id="last-refresh">Refreshing...</span>
+        <!-- TOPBAR -->
+        <div class="topbar">
+            <div class="market-state">
+                <span class="dot" id="market-dot"></span>
+                <span class="bright" style="font-weight:500" id="market-exchange">NYSE</span>
+                <span class="mono dim" id="market-status">--</span>
+                <span class="vr-inline"></span>
+                <span class="mono">SPY</span>
+                <span class="mono" id="spy-change">--</span>
+                <span class="vr-inline"></span>
+                <span class="mono dim" id="market-time">--:--:-- ET</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
+                <button class="pill-action" id="paper-badge">
+                    <span class="dot live"></span>
+                    <span class="mono" style="color:var(--mint)">Paper</span>
+                    <span class="muted">&middot;</span>
+                    <span id="topbar-equity">$ --</span>
+                </button>
+                <div id="ws-badge" class="pill-action ws-off">
+                    <span class="dot" id="ws-dot"></span>
+                    <span id="ws-text">WS</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN CONTENT -->
+        <main class="main">
+            <!-- OVERVIEW PAGE -->
+            <div id="page-overview" class="page active">
+                <div class="ov">
+                    <!-- Metric row -->
+                    <div class="panel metric">
+                        <div class="panel-b">
+                            <div class="l">Equity</div>
+                            <div class="v" id="ov-equity">$ --</div>
+                            <div class="d" id="ov-pnl">--</div>
+                        </div>
                     </div>
-                </header>
-                <div class="dashboard-grid">
-                    <div class="metric-card">
-                        <h3>Portfolio Value</h3>
-                        <div class="value" id="val-portfolio">&#8377;&mdash;</div>
-                        <div class="subtext" id="val-pnl">&mdash;</div>
+                    <div class="panel metric">
+                        <div class="panel-b">
+                            <div class="l">Total P&L</div>
+                            <div class="v" id="ov-total-pnl">$ --</div>
+                            <div class="d muted">Since inception</div>
+                        </div>
                     </div>
-                    <div class="metric-card">
-                        <h3>Total P&amp;L</h3>
-                        <div class="value" id="val-total-pnl">&#8377;&mdash;</div>
-                        <div class="subtext">Since inception</div>
+                    <div class="panel metric">
+                        <div class="panel-b">
+                            <div class="l">Max Drawdown</div>
+                            <div class="v down" id="ov-drawdown">0.00%</div>
+                            <div class="d muted">From peak equity</div>
+                        </div>
                     </div>
-                    <div class="metric-card">
-                        <h3>Max Drawdown</h3>
-                        <div class="value text-danger" id="val-drawdown">0.00%</div>
-                        <div class="subtext">From peak equity</div>
-                    </div>
-                    <div class="metric-card">
-                        <h3>Active Positions</h3>
-                        <div class="value" id="val-positions">&mdash;</div>
-                        <div class="subtext" id="val-exposure">&mdash;</div>
-                    </div>
-                    <div class="metric-card">
-                        <h3>Gross Exposure</h3>
-                        <div class="value" id="val-gross">&mdash;</div>
-                        <div class="subtext" id="val-net-exp">Net: &mdash;</div>
-                    </div>
-                    <div class="metric-card">
-                        <h3>Last Run</h3>
-                        <div class="value" style="font-size:0.95rem;line-height:1.4" id="val-last-run">&mdash;</div>
-                        <div class="subtext" id="val-model">&mdash;</div>
+                    <div class="panel metric">
+                        <div class="panel-b">
+                            <div class="l">Active Positions</div>
+                            <div class="v" id="ov-positions">0</div>
+                            <div class="d muted" id="ov-pos-detail">--</div>
+                        </div>
                     </div>
 
-                    <div class="chart-container span-full">
-                        <div class="chart-header">
-                            <h2>Portfolio Value vs <span id="benchmark-label">S&amp;P 500</span></h2>
-                            <div class="chart-legend">
-                                <span class="leg-item"><span class="leg-dot" style="background:#00d09c"></span>Portfolio</span>
-                                <span class="leg-item"><span class="leg-dot" style="background:#5b8def"></span><span id="benchmark-label-legend">S&amp;P 500</span></span>
+                    <!-- Equity curve -->
+                    <div class="panel span-full">
+                        <div class="panel-h">
+                            <div>
+                                <div class="title">Equity curve &middot; vs S&P 500</div>
+                                <div class="kicker" id="chart-subtitle">paper portfolio</div>
+                            </div>
+                            <div style="display:flex;gap:14px;align-items:center;font-size:11px">
+                                <span style="display:flex;align-items:center;gap:6px;color:var(--mint)">
+                                    <span style="width:12px;height:2px;background:var(--mint)"></span> AegisQuant
+                                </span>
+                                <span style="display:flex;align-items:center;gap:6px;color:var(--ink-400)">
+                                    <span style="width:12px;height:0;border-top:2px dashed var(--ink-500)"></span> <span id="bench-label">S&P 500</span>
+                                </span>
                             </div>
                         </div>
-                        <canvas id="pnlChart"></canvas>
+                        <div style="padding:8px 10px;height:260px">
+                            <canvas id="pnlChart"></canvas>
+                        </div>
                     </div>
 
-                    <div class="data-table-container span-full">
-                        <div class="table-header-row">
-                            <h2>Latest Run &mdash; Agent Positions
-                                <span id="run-timestamp" class="dim-label"></span>
-                            </h2>
-                            <div id="run-summary" class="run-summary-pills"></div>
+                    <!-- Agent committee strip -->
+                    <div class="panel span-full">
+                        <div class="panel-h">
+                            <div class="title">Agent committee &middot; latest run</div>
+                            <div class="kicker" id="committee-summary">--</div>
                         </div>
-                        <table class="modern-table">
-                            <thead><tr>
-                                <th>Symbol</th>
-                                <th>Direction</th>
-                                <th>Weight</th>
-                                <th>Capital Allocated</th>
-                                <th>Reasoning</th>
-                            </tr></thead>
-                            <tbody id="latest-run-body">
-                                <tr><td colspan="5" class="empty-state">Loading...</td></tr>
-                            </tbody>
-                        </table>
+                        <div class="agent-strip" id="agent-strip">
+                            <div class="muted" style="padding:16px;font-size:12px">Loading agent data...</div>
+                        </div>
+                    </div>
+
+                    <!-- Latest positions table -->
+                    <div class="panel span-full">
+                        <div class="panel-h">
+                            <div class="title">Latest run &middot; agent positions</div>
+                            <div class="kicker" id="run-ts">--</div>
+                        </div>
+                        <div class="panel-b flush">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Direction</th>
+                                        <th class="r">Weight</th>
+                                        <th class="r">Capital</th>
+                                        <th>Strategy</th>
+                                        <th>Reasoning</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ov-positions-body">
+                                    <tr><td colspan="6" class="empty">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Circuit breakers mini -->
+                    <div class="panel span-full">
+                        <div class="panel-h">
+                            <div class="title">Circuit breakers &middot; armed</div>
+                            <div class="kicker">strategy guardrails &mdash; live</div>
+                        </div>
+                        <div class="panel-b flush circuit-grid" id="circuit-mini">
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ── PAGE: POSITIONS ── -->
-            <div id="page-positions" class="page">
-                <header class="topbar">
-                    <h1>Positions</h1>
-                    <div class="user-profile"><span class="status-indicator"></span> Live data</div>
-                </header>
-                <div class="section-grid">
-                    <div class="row-2">
-                        <div class="card half-card">
-                            <h2>Exposure Breakdown</h2>
-                            <div class="donut-wrap"><canvas id="exposureChart"></canvas></div>
-                            <div id="exposure-legend" class="legend-row"></div>
-                        </div>
-                        <div class="card half-card">
-                            <h2>Holdings by Weight</h2>
-                            <canvas id="holdingsBar"></canvas>
-                        </div>
-                    </div>
-                    <div class="card full-card">
-                        <div class="table-header-row">
-                            <h2>Open Positions (Detailed)</h2>
-                            <div class="filter-row">
-                                <button class="filter-btn active" data-filter="all">All</button>
-                                <button class="filter-btn" data-filter="LONG">Long</button>
-                                <button class="filter-btn" data-filter="SHORT">Short</button>
-                            </div>
-                        </div>
-                        <table class="modern-table" id="positions-full-table">
-                            <thead><tr>
-                                <th>Symbol</th>
-                                <th>Direction</th>
-                                <th>Weight</th>
-                                <th>Capital</th>
-                                <th>Last Price</th>
-                                <th>Est. Shares</th>
-                                <th>Strategy</th>
-                            </tr></thead>
-                            <tbody id="positions-full-body"></tbody>
-                        </table>
-                        <p class="footnote">* Paper mode. Est. shares = capital / last price (yfinance).</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── PAGE: TRADE HISTORY ── -->
+            <!-- AI TRADES PAGE -->
             <div id="page-trades" class="page">
-                <header class="topbar">
-                    <h1>Trade History</h1>
-                    <div class="user-profile"><span class="status-indicator"></span> Closed trades</div>
-                </header>
-                <div class="section-grid">
-                    <div class="card full-card">
-                        <h2>Closed Trades</h2>
-                        <table class="modern-table">
-                            <thead><tr>
-                                <th>Symbol</th>
-                                <th>Strategy</th>
-                                <th>Entry</th>
-                                <th>Exit</th>
-                                <th>Qty</th>
-                                <th>P&amp;L %</th>
-                                <th>Realized P&amp;L</th>
-                                <th>Exit Reason</th>
-                                <th>Entry Date</th>
-                                <th>Exit Date</th>
-                            </tr></thead>
-                            <tbody id="trades-body">
-                                <tr><td colspan="10" class="empty-state">Loading...</td></tr>
+                <div class="ait">
+                    <div class="list">
+                        <div class="list-h">
+                            <div>
+                                <div class="kicker">AI Trade Decisions</div>
+                                <div style="font-size:11px;color:var(--ink-400);margin-top:2px" id="trades-count">-- decisions</div>
+                            </div>
+                        </div>
+                        <div class="toggle-group" style="margin:10px 14px">
+                            <button class="on" data-filter="all">all</button>
+                            <button data-filter="LONG">long</button>
+                            <button data-filter="BUY">buy</button>
+                        </div>
+                        <div class="list-rows" id="trades-list">
+                            <div class="muted" style="padding:20px;font-size:12px">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="detail" id="trade-detail">
+                        <div class="muted" style="padding:40px;text-align:center;font-size:12px">
+                            Select a decision to view details
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- POSITIONS PAGE -->
+            <div id="page-positions" class="page">
+                <div class="pos-wrap">
+                    <div class="pos-summary" id="pos-summary">
+                    </div>
+                    <div style="padding:14px 18px">
+                        <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:10px">
+                            <div style="font-size:13px;font-weight:500;color:var(--ink-100);letter-spacing:0.02em">Open Positions</div>
+                            <div class="kicker" id="pos-subtitle">loading...</div>
+                            <div style="flex:1"></div>
+                            <div class="toggle-group" id="pos-filters">
+                                <button class="on" data-filter="all">all</button>
+                                <button data-filter="LONG">long</button>
+                            </div>
+                        </div>
+                        <table class="table panel" style="border-radius:var(--radius);overflow:hidden">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Side</th>
+                                    <th class="r">Weight %</th>
+                                    <th class="r">Capital</th>
+                                    <th class="r">Last Price</th>
+                                    <th class="r">Est. Shares</th>
+                                    <th>Strategy</th>
+                                    <th>AI Thesis</th>
+                                </tr>
+                            </thead>
+                            <tbody id="positions-body">
+                                <tr><td colspan="8" class="empty">Loading...</td></tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
             </div>
 
-            <!-- ── PAGE: DECISIONS ── -->
-            <div id="page-decisions" class="page">
-                <header class="topbar">
-                    <h1>AI Decisions</h1>
-                    <div class="user-profile"><span class="status-indicator"></span> Agent log</div>
-                </header>
-                <div class="section-grid">
-                    <div class="card full-card">
-                        <h2>Decision History</h2>
-                        <table class="modern-table">
-                            <thead><tr>
-                                <th>Timestamp</th>
-                                <th>Model</th>
-                                <th>Universe</th>
-                                <th>Longs</th>
-                                <th>Shorts</th>
-                                <th>Gross Exp.</th>
-                                <th>Circuit Breaker</th>
-                                <th>Slippage (bps)</th>
-                            </tr></thead>
-                            <tbody id="decisions-full-body"></tbody>
+            <!-- ORDER JOURNAL PAGE -->
+            <div id="page-journal" class="page">
+                <div class="jrnl">
+                    <div class="panel" style="margin-bottom:12px">
+                        <div class="journal-stats" id="journal-stats">
+                        </div>
+                    </div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                        <div>
+                            <div class="kicker">Decision stream</div>
+                            <div style="font-size:12px;color:var(--ink-400);margin-top:4px">
+                                Stored in <span class="mono bright">aegisquant_live.db</span> &rarr; decisions table
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Model</th>
+                                    <th>Universe</th>
+                                    <th class="r">Longs</th>
+                                    <th class="r">Gross Exp.</th>
+                                    <th>Circuit Breaker</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="journal-body">
+                                <tr><td colspan="7" class="empty">Loading...</td></tr>
+                            </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
 
-                    <div class="card full-card" id="decision-detail-card" style="display:none">
-                        <div class="table-header-row">
-                            <h2 id="detail-title">Decision Detail</h2>
-                            <button class="close-btn" id="close-detail">&#10005; Close</button>
+            <!-- CIRCUIT BREAKERS PAGE -->
+            <div id="page-circuits" class="page">
+                <div class="circ">
+                    <div class="panel" style="overflow:hidden;display:flex;flex-direction:column">
+                        <div class="panel-h">
+                            <div class="title">Armed circuits</div>
+                            <span class="chip mint-chip" id="circuits-armed">-- armed</span>
                         </div>
-                        <div id="detail-body"></div>
+                        <div class="panel-b flush" id="circuits-list">
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-h">
+                            <div>
+                                <div class="title" id="circuit-detail-title">Select a circuit breaker</div>
+                                <div class="kicker" style="margin-top:4px">preview configuration</div>
+                            </div>
+                        </div>
+                        <div class="panel-b" id="circuit-detail">
+                            <div class="muted" style="font-size:12px">Click a circuit breaker on the left to see details.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ALPACA SETUP PAGE -->
+            <div id="page-setup" class="page">
+                <div class="setup">
+                    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px">
+                        <div>
+                            <h1 style="font-size:20px;font-weight:500;margin:0">Alpaca broker setup</h1>
+                            <div class="muted" style="font-size:12.5px;margin-top:4px">
+                                Credentials live in <span class="mono bright">.env</span> and never leave the AegisQuant host.
+                            </div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px" id="setup-status">
+                            <span class="dot off"></span>
+                            <span style="font-size:12px;color:var(--ink-400)">Checking...</span>
+                        </div>
+                    </div>
+
+                    <!-- Mode -->
+                    <div class="panel">
+                        <div class="panel-h">
+                            <div class="title">Mode</div>
+                            <div class="kicker">paper sandbox vs live capital</div>
+                        </div>
+                        <div class="panel-b" style="display:flex;align-items:center;gap:14px">
+                            <div style="flex:1">
+                                <div class="kicker" style="margin-bottom:4px">Current</div>
+                                <div style="font-size:16px;font-weight:500;color:var(--mint)" id="setup-mode">Paper mode</div>
+                                <div class="muted mono" style="font-size:11.5px;margin-top:4px" id="setup-url">--</div>
+                            </div>
+                            <div class="toggle-group">
+                                <button class="on">Paper</button>
+                                <button disabled style="opacity:0.4">Live</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Connection test -->
+                    <div class="panel">
+                        <div class="panel-h">
+                            <div class="title">Connection test</div>
+                            <button class="btn primary" id="test-conn-btn">Run test</button>
+                        </div>
+                        <div class="panel-b" id="conn-test-result">
+                            <div class="muted" style="font-size:12px">Click "Run test" to ping Alpaca endpoints.</div>
+                        </div>
+                    </div>
+
+                    <!-- Account snapshot -->
+                    <div class="panel">
+                        <div class="panel-h">
+                            <div class="title">Account snapshot</div>
+                            <div class="kicker" id="setup-last-sync">--</div>
+                        </div>
+                        <div class="account-grid" id="account-grid">
+                            <div class="muted" style="padding:16px;font-size:12px">Loading...</div>
+                        </div>
                     </div>
                 </div>
             </div>
         </main>
+
+        <!-- STATUS BAR -->
+        <div class="statusbar">
+            <span class="seg" id="status-system">
+                <span class="dot" id="status-dot"></span>
+                <span id="status-text">CONNECTING...</span>
+            </span>
+            <span class="seg">
+                Circuit breakers <span id="status-cb" class="bright">--</span>
+            </span>
+            <span class="seg">
+                DD <span id="status-dd" class="down">--</span>
+            </span>
+            <span class="seg">
+                Broker <span id="status-broker" class="ok">Alpaca</span>
+            </span>
+            <span style="margin-left:auto">
+                <span id="status-time">--:--:-- ET</span> &middot; NYSE
+            </span>
+        </div>
     </div>
 
     <script src="/static/app.js"></script>
