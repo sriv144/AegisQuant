@@ -122,17 +122,28 @@ Produce a JSON output matching this schema exactly:
 
         vix = macro_data.get("vix")
         slope = macro_data.get("yield_curve_slope_bps")
-        action = "HOLD"
-        confidence = 0.25
-        rationale = "Fallback macro signal remains neutral."
-        if isinstance(vix, (int, float)) and vix >= 25:
+
+        # Determine fallback heuristic — now includes a PROPOSE_LONG path for benign macro
+        if macro_data.get("fetch_error") or not isinstance(vix, (int, float)):
+            action = "HOLD"
+            confidence = 0.25
+            rationale = f"Macro data unavailable ({macro_data.get('fetch_error', 'no data')}) — neutral stance."
+        elif vix >= 30:
             action = "HOLD"
             confidence = 0.30
-            rationale = "Elevated VIX indicates a risk-off regime — staying flat (long-only mode)."
+            rationale = f"Elevated VIX={vix:.1f} signals risk-off regime — staying flat (long-only mode)."
         elif isinstance(slope, (int, float)) and slope < 0:
             action = "HOLD"
             confidence = 0.25
-            rationale = "An inverted yield curve suggests macro stress — staying flat (long-only mode)."
+            rationale = f"Inverted yield curve (slope={slope:.0f}bps) signals macro stress — staying flat."
+        elif isinstance(vix, (int, float)) and vix < 20 and isinstance(slope, (int, float)) and slope > 20:
+            action = "PROPOSE_LONG"
+            confidence = 0.55
+            rationale = f"Benign macro: VIX={vix:.1f} (low fear), yield curve={slope:.0f}bps (healthy). Macro tailwind for equities."
+        else:
+            action = "HOLD"
+            confidence = 0.35
+            rationale = f"Neutral macro environment (VIX={vix:.1f}, curve={slope}bps) — no strong directional signal."
 
         fallback = {
             "agent_name": self.name,

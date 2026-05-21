@@ -60,6 +60,81 @@ _weight_engine = ConsensusWeightEngine(max_positions=15, max_per_ticker=0.10)
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))
 
 
+def _sync_positions_from_alpaca(broker: "BaseBroker") -> None:
+    """
+    Sync Alpaca live positions → open_positions DB table after each cycle.
+    - Upserts every live Alpaca position (create if missing, update qty if changed)
+    - Marks DB rows that are no longer in Alpaca as CLOSED (auto-exit detection)
+    Bypasses the filled_qty poll gap that leaves the table empty.
+    """
+    from src.db.models import OpenPosition
+
+    try:
+        alpaca_positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[PositionSync] Could not fetch Alpaca positions: {e}")
+        return
+
+    if not alpaca_positions:
+        logger.info("[PositionSync] No open positions in Alpaca — nothing to sync")
+        return
+
+    alpaca_map: dict = {p["ticker"]: p for p in alpaca_positions}
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with db_manager.SessionLocal() as session:
+            # ── Upsert each live Alpaca position ────────────────────────
+            for ticker, ap in alpaca_map.items():
+                existing = (
+                    session.query(OpenPosition)
+                    .filter(OpenPosition.ticker == ticker, OpenPosition.status == "OPEN")
+                    .first()
+                )
+                if existing:
+                    # Refresh quantity in case of partial fills / additions
+                    existing.quantity = int(ap["qty"])
+                    existing.updated_at = now_str
+                else:
+                    # Brand-new position not previously tracked
+                    session.add(OpenPosition(
+                        ticker=ticker,
+                        entry_price=float(ap["avg_price"]),
+                        entry_date=today_str,
+                        quantity=int(ap["qty"]),
+                        trade_type="CNC",
+                        strategy="alpaca_sync",
+                        sector="US",
+                        status="OPEN",
+                        created_at=now_str,
+                        updated_at=now_str,
+                    ))
+                    logger.info(f"[PositionSync] Inserted missing position: {ticker} qty={ap['qty']} avg=${ap['avg_price']:.2f}")
+
+            # ── Auto-close DB rows no longer held in Alpaca ─────────────
+            open_in_db = (
+                session.query(OpenPosition).filter(OpenPosition.status == "OPEN").all()
+            )
+            closed_count = 0
+            for pos in open_in_db:
+                if pos.ticker not in alpaca_map:
+                    pos.status = "CLOSED"
+                    pos.exit_date = today_str
+                    pos.exit_reason = "ALPACA_SYNC_EXIT"
+                    pos.updated_at = now_str
+                    closed_count += 1
+                    logger.info(f"[PositionSync] Auto-closed {pos.ticker} (no longer in Alpaca)")
+
+            session.commit()
+            logger.info(
+                f"[PositionSync] Done — {len(alpaca_map)} live positions, "
+                f"{closed_count} auto-closed"
+            )
+    except Exception as e:
+        logger.error(f"[PositionSync] DB write failed: {e}")
+
+
 def _fetch_vix() -> float:
     """Fetch latest CBOE VIX from yfinance. Returns 20.0 on any failure."""
     return us_market_data.get_vix()
@@ -166,6 +241,7 @@ def main_us_live_loop():
 
     # ── Phase 3: Position Management ─────────────────────────────
     print("\n[Phase 3] Checking position exits (SL/TP/aging)...")
+    position_manager._load_from_db()   # reload cache each cycle — picks up positions synced in Phase 11b
     theo_prices = {}
     for tick in UNIVERSE:
         theo_prices[tick] = us_market_data.get_latest_quote(tick)
@@ -318,6 +394,10 @@ def main_us_live_loop():
                 reason = analyst_decisions.get(ticker, {}).get("reasoning", "Analyst EXIT")[:50]
                 position_manager.close_position(ticker, exit_price, reason="ANALYST_EXIT")
                 print(f"  EXIT {ticker} @ ${exit_price:.2f} — {reason}")
+
+    # ── Phase 11b: Sync Alpaca → DB (fixes filled_qty gap) ───────
+    print("\n[Phase 11b] Syncing Alpaca positions → DB...")
+    _sync_positions_from_alpaca(broker)
 
     # ── Phase 12: Metrics & Logging ──────────────────────────────
     shortfall = broker.calculate_shortfall(UNIVERSE, safe_weights, theo_prices, results)

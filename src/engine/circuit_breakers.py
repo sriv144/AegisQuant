@@ -225,8 +225,8 @@ class ExecutionFailsafe:
     def __init__(self):
         self.rules = [
             LongOnlyRule(),                           # FIRST: enforce no shorts
-            DrawdownCircuitBreaker(max_drawdown=0.20),
-            VolatilityCircuitBreaker(vix_threshold=60.0),
+            DrawdownCircuitBreaker(max_drawdown=0.15),   # was 0.20 — tighter protection
+            VolatilityCircuitBreaker(vix_threshold=35.0),  # was 60.0 — fires on real stress not just black swans
             MaxPositionRule(max_weight=0.10),          # Max 10% per ticker
             TimeWindowRule(),
             PositionStopLossRule(),
