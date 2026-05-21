@@ -241,6 +241,7 @@ def main_us_live_loop():
 
     # ── Phase 3: Position Management ─────────────────────────────
     print("\n[Phase 3] Checking position exits (SL/TP/aging)...")
+    position_manager._load_from_db()   # reload cache each cycle — picks up positions synced in Phase 11b
     theo_prices = {}
     for tick in UNIVERSE:
         theo_prices[tick] = us_market_data.get_latest_quote(tick)

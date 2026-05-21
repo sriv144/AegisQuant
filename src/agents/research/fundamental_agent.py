@@ -105,20 +105,29 @@ Produce a JSON output matching this schema exactly:
         ytd_return = data.get("ytd_return_pct")
         action = "HOLD"
         confidence = 0.25
-        rationale = "Fallback fundamental signal remains neutral."
-        if isinstance(pct_from_high, (int, float)) and isinstance(volume_ratio, (int, float)):
-            if pct_from_high > -5 and volume_ratio >= 1.1:
+        rationale = "No clear fundamental signal."
+        if data.get("error"):
+            rationale = f"Data fetch error ({data['error']}) — neutral."
+        elif isinstance(pct_from_high, (int, float)) and isinstance(volume_ratio, (int, float)):
+            if pct_from_high > -12 and volume_ratio >= 0.8:
+                # Within 12% of 52w high with normal volume — uptrend intact
                 action = "PROPOSE_LONG"
-                confidence = 0.62
-                rationale = "Price is holding near the 52-week high with supportive volume."
-            elif pct_from_high < -15 and volume_ratio >= 1.5:
+                confidence = 0.60
+                rationale = f"Price within 12% of 52w high ({pct_from_high:.1f}%) with adequate volume ({volume_ratio:.2f}x). Uptrend intact."
+            elif isinstance(ytd_return, (int, float)) and ytd_return > 8 and volume_ratio >= 0.8:
+                # Strong YTD return + steady volume — sustained positive trend
                 action = "PROPOSE_LONG"
-                confidence = 0.58
-                rationale = "Deep pullback with elevated volume suggests capitulation."
+                confidence = 0.52
+                rationale = f"YTD return={ytd_return:.1f}% with steady volume ({volume_ratio:.2f}x). Sustained uptrend."
+            elif pct_from_high < -15 and volume_ratio >= 1.3:
+                # Deep pullback with above-average volume — capitulation / contrarian long
+                action = "PROPOSE_LONG"
+                confidence = 0.55
+                rationale = f"Deep pullback ({pct_from_high:.1f}% from high) with volume surge ({volume_ratio:.2f}x). Potential capitulation."
             elif isinstance(ytd_return, (int, float)) and ytd_return < -10 and volume_ratio < 1.0:
                 action = "HOLD"
                 confidence = 0.30
-                rationale = "Weak YTD trend without volume confirmation — staying flat (long-only mode)."
+                rationale = f"Weak YTD return ({ytd_return:.1f}%) without volume confirmation — staying flat."
 
         fallback = {
             "agent_name": self.name,
