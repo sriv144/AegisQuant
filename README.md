@@ -1,5 +1,9 @@
 # AegisQuant
 
+[![tests](https://github.com/sriv144/AegisQuant/actions/workflows/tests.yml/badge.svg)](https://github.com/sriv144/AegisQuant/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
+
 AegisQuant is a production-grade, multi-asset algorithmic trading pipeline utilizing Reinforcement Learning (PPO/SAC) combined with Large Language Model consensus scoring to actively generate systematic alpha.
 
 The system structurally bridges the gap between pure ML research and financial deployment by embedding institutional risk-management techniques (Continuous Feature Normalization, Gaussian HMM Regime Detection, SHAP Agent Attribution, Drawdown Circuit Breakers, and Implementation Shortfall tracking).
@@ -54,6 +58,12 @@ The codebase is mapped heavily against `pytest`. Execute safety verifications be
 ```bash
 python -m pytest tests/
 ```
+
+Every push and pull request to `main` also runs the suite automatically via
+GitHub Actions ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+CI sets `ENABLE_MOCK_DATA=True` and `ENABLE_BROKER_EXECUTION=False` so the
+correctness checks never reach for `yfinance` or live broker APIs — this is a
+dedicated test signal, kept separate from the live `trade.yml` heartbeat.
 
 ## Authors
 _Built originally to merge Modern Portfolio Theory with Autonomous AI frameworks._

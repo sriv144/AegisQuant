@@ -8,3 +8,10 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# pip-install stderr accidentally redirected into files such as "=0.2.36"
+=*
+# stray local test/run logs that should not be committed
+pcr.txt
+pytest_*.txt
+*.log
