@@ -373,20 +373,33 @@ def get_portfolio(_auth=Depends(require_auth)):
             return {"history": [], "current_value": DEFAULT_CAPITAL, "drawdown": 0.0, "total_pnl": 0.0}
 
         latest = df.iloc[-1]
-        # Enrich with live Alpaca equity for most-current value
+        db_total_pnl = float(latest["total_pnl"])
+        db_drawdown = float(latest["drawdown"])
+
+        # Enrich with live Alpaca for current equity + daily change
+        # Also override total_pnl / drawdown if the DB shows stale zeros
+        live = {}
         try:
             live = _alpaca_portfolio_live()
-            current_value = live.get("current_value", float(latest["total_portfolio_value"]))
-            daily_pnl = live.get("daily_pnl", 0.0)
         except Exception:
-            current_value = float(latest["total_portfolio_value"])
-            daily_pnl = 0.0
+            pass
+
+        current_value = live.get("current_value", float(latest["total_portfolio_value"]))
+        daily_pnl = live.get("daily_pnl", 0.0)
+
+        # Prefer live Alpaca total_pnl/drawdown when DB values are clearly stale
+        # (DB shows 0 P&L but equity ≠ initial capital → pipeline hasn't updated yet)
+        total_pnl = db_total_pnl
+        drawdown = db_drawdown
+        if live and abs(db_total_pnl) < 1.0 and abs(current_value - DEFAULT_CAPITAL) > 100:
+            total_pnl = live.get("total_pnl", db_total_pnl)
+            drawdown = live.get("drawdown", db_drawdown)
 
         return {
             "history": df.to_dict(orient="records"),
             "current_value": current_value,
-            "drawdown": float(latest["drawdown"]),
-            "total_pnl": float(latest["total_pnl"]),
+            "drawdown": drawdown,
+            "total_pnl": total_pnl,
             "daily_pnl": daily_pnl,
         }
     except Exception as e:
@@ -428,7 +441,15 @@ def get_benchmark(_auth=Depends(require_auth)):
                 init_row = conn.execute(text(
                     "SELECT total_portfolio_value FROM daily_pnl ORDER BY date ASC LIMIT 1"
                 )).fetchone()
-            initial_pv = float(init_row[0]) if init_row else DEFAULT_CAPITAL
+            raw_initial = float(init_row[0]) if init_row else DEFAULT_CAPITAL
+            # If the stored value differs from DEFAULT_CAPITAL by >50%, the DB row is
+            # stale (old test run with different capital). Normalize to DEFAULT_CAPITAL
+            # so the benchmark chart aligns with the portfolio chart.
+            initial_pv = (
+                DEFAULT_CAPITAL
+                if abs(raw_initial - DEFAULT_CAPITAL) / max(DEFAULT_CAPITAL, 1) > 0.5
+                else raw_initial
+            )
 
         bench_data = yf.download(BENCHMARK_SYMBOL, start=start, end=end, auto_adjust=True, progress=False)
         if bench_data.empty:
