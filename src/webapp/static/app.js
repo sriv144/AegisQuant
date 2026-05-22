@@ -410,8 +410,8 @@ function renderOverviewPositions(run) {
 
     body.innerHTML = positions.slice(0, 15).map(p => {
         const r = p.reasoning || {};
-        const strategy = r.committee?.strategy || r.strategy || '--';
-        const reasoning = r.committee?.reasoning || r.reasoning || '--';
+        const strategy = r.committee?.strategy || r.strategy || r.strategy_used || '--';
+        const reasoning = r.committee?.reasoning || r.reasoning || r.analyst_reasoning || '--';
         const reasonShort = typeof reasoning === 'string' ? reasoning.slice(0, 80) : '--';
 
         return `<tr>
@@ -583,7 +583,10 @@ function selectDecision(idx) {
             const r = p.reasoning;
             const committee = r.committee || {};
             const signals = r.research_signals || [];
-            const reasonText = committee.reasoning || r.reasoning || 'No reasoning available';
+            const reasonText = committee.reasoning
+                || r.reasoning
+                || r.analyst_reasoning
+                || 'No reasoning available';
 
             return `
             <div class="reason-panel">
@@ -654,8 +657,8 @@ function renderPositionsPage() {
 
     body.innerHTML = allPositions.map(p => {
         const r = p.reasoning || {};
-        const strategy = r.committee?.strategy || r.strategy || '--';
-        const thesis = r.committee?.reasoning || r.reasoning || '--';
+        const strategy = r.committee?.strategy || r.strategy || r.strategy_used || '--';
+        const thesis = r.committee?.reasoning || r.reasoning || r.analyst_reasoning || '--';
         const thesisShort = typeof thesis === 'string' ? thesis.slice(0, 60) : '--';
 
         return `<tr>

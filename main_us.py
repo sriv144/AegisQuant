@@ -106,6 +106,8 @@ def _sync_positions_from_alpaca(broker: "BaseBroker") -> None:
                         trade_type="CNC",
                         strategy="alpaca_sync",
                         sector="US",
+                        tranche="CORE",    # existing positions assumed CORE until re-classified
+                        opened_at=now_str,
                         status="OPEN",
                         created_at=now_str,
                         updated_at=now_str,
@@ -233,15 +235,25 @@ def main_us_live_loop():
     # ── Phase 1: Universe Screening ──────────────────────────────
     print("\n[Phase 1] Screening universe...")
     UNIVERSE = us_universe_screener.screen_universe()
-    print(f"  Selected {len(UNIVERSE)} tickers: {', '.join(UNIVERSE[:10])}{'...' if len(UNIVERSE) > 10 else ''}")
+    print(f"  Screened {len(UNIVERSE)} tickers: {', '.join(UNIVERSE[:10])}{'...' if len(UNIVERSE) > 10 else ''}")
 
     # ── Phase 2: Connect Broker ──────────────────────────────────
     broker = get_broker()
     broker.connect()
 
-    # ── Phase 3: Position Management ─────────────────────────────
-    print("\n[Phase 3] Checking position exits (SL/TP/aging)...")
-    position_manager._load_from_db()   # reload cache each cycle — picks up positions synced in Phase 11b
+    # ── Phase 3: Sync Alpaca → DB FIRST, then check exits ────────
+    # Sync BEFORE daily_check so stop-loss operates on live positions (not stale cache)
+    print("\n[Phase 3] Syncing Alpaca positions → DB, then checking exits...")
+    _sync_positions_from_alpaca(broker)
+    position_manager._load_from_db()   # refresh cache after sync
+
+    # Prepend held tickers to universe so the analyst re-evaluates every holding each cycle
+    held_tickers = _get_held_tickers(broker)
+    if held_tickers:
+        print(f"  Held positions: {sorted(held_tickers)} — prepending to universe for re-analysis")
+        UNIVERSE = list(dict.fromkeys(list(held_tickers) + UNIVERSE))[:40]
+    print(f"  Final universe ({len(UNIVERSE)} tickers): {', '.join(UNIVERSE[:10])}{'...' if len(UNIVERSE) > 10 else ''}")
+
     theo_prices = {}
     for tick in UNIVERSE:
         theo_prices[tick] = us_market_data.get_latest_quote(tick)
@@ -282,9 +294,6 @@ def main_us_live_loop():
             "news_volume": agg.get("news_volume", 0),
         }
 
-    held_tickers = _get_held_tickers(broker)
-    print(f"  Currently holding {len(held_tickers)} positions: {sorted(held_tickers) if held_tickers else 'none'}")
-
     # ── Phase 6: Research Agents ─────────────────────────────────
     print("\n[Phase 6] Research agents analyzing all tickers...")
     all_agent_signals = {}
@@ -322,10 +331,12 @@ def main_us_live_loop():
         analyst_decisions[ticker] = decision
 
     # ── Phase 9: Weight Allocation ───────────────────────────────
-    print("\n[Phase 9] Computing portfolio weights...")
+    print("\n[Phase 9] Computing portfolio weights (two-tranche Buffett model)...")
+    held_positions = position_manager.get_open_positions()  # Dict[ticker, Position]
     target_weights, actions = _weight_engine.compute_target_weights(
         tickers=UNIVERSE,
         analyst_decisions=analyst_decisions,
+        held_positions=held_positions,
     )
 
     # Build reasoning map for DB
@@ -376,15 +387,21 @@ def main_us_live_loop():
         trade_types=trade_types,
     )
 
-    # Log new positions
+    # Log new positions — classify into CORE or TACTICAL tranche based on confidence
     for i, ticker in enumerate(UNIVERSE):
         if actions.get(ticker) == "BUY" and safe_weights[i] > 0:
             result = results.get(ticker)
             if result and result.filled_qty > 0:
                 fill_price = result.fill_price if result.fill_price > 0 else theo_prices[ticker]
                 strategy = analyst_decisions.get(ticker, {}).get("strategy_used", "analyst")
-                pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy)
+                confidence = float(analyst_decisions.get(ticker, {}).get("confidence", 0.3))
+                # Core: high conviction (>=0.55); Tactical: moderate (0.40-0.55) quality-gated
+                if confidence < 0.55:
+                    pos = Position.default_tactical(ticker, fill_price, result.filled_qty, strategy)
+                else:
+                    pos = Position.default_cnc(ticker, fill_price, result.filled_qty, strategy, tranche="CORE")
                 position_manager.open_position(pos)
+                print(f"  Opened {ticker} [{pos.tranche}] conf={confidence:.2f} @ ${fill_price:.2f}")
 
     # Execute EXIT signals
     for ticker in UNIVERSE:
@@ -395,8 +412,9 @@ def main_us_live_loop():
                 position_manager.close_position(ticker, exit_price, reason="ANALYST_EXIT")
                 print(f"  EXIT {ticker} @ ${exit_price:.2f} — {reason}")
 
-    # ── Phase 11b: Sync Alpaca → DB (fixes filled_qty gap) ───────
-    print("\n[Phase 11b] Syncing Alpaca positions → DB...")
+    # ── Phase 11b: Final Alpaca → DB reconciliation (catches filled orders) ──
+    # Primary sync is now in Phase 3; this catches any fills that happened during execution
+    print("\n[Phase 11b] Post-execution Alpaca reconciliation...")
     _sync_positions_from_alpaca(broker)
 
     # ── Phase 12: Metrics & Logging ──────────────────────────────

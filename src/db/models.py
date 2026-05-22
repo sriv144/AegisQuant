@@ -49,6 +49,8 @@ class OpenPosition(Base):
     take_profit_pct = Column(Float, default=0.20)
     max_hold_days = Column(Integer, default=90)
     sector = Column(String, default="OTHER")
+    tranche = Column(String, default="CORE")        # "CORE" (80%, long-term) or "TACTICAL" (20%, short-term)
+    opened_at = Column(String, nullable=True)       # ISO datetime of first open (audit trail)
     status = Column(String, default="OPEN")  # "OPEN" or "CLOSED"
     exit_price = Column(Float, nullable=True)
     exit_date = Column(String, nullable=True)  # ISO date
@@ -115,7 +117,30 @@ class DatabaseSessionManager:
 
         self.engine = create_engine(self.db_url, **engine_kwargs)
         Base.metadata.create_all(self.engine)
+        self._run_migrations()
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+
+    def _run_migrations(self):
+        """
+        Apply incremental schema changes that SQLAlchemy create_all() won't add to
+        existing tables (SQLite doesn't support ALTER TABLE MODIFY COLUMN).
+        Safe to run every startup — uses 'IF NOT EXISTS' style checks.
+        """
+        from sqlalchemy import text as sql_text
+        migrations = [
+            # Buffett two-tranche: tranche classification per position
+            "ALTER TABLE open_positions ADD COLUMN tranche VARCHAR DEFAULT 'CORE'",
+            # Audit trail: when was this position first opened
+            "ALTER TABLE open_positions ADD COLUMN opened_at VARCHAR",
+        ]
+        with self.engine.connect() as conn:
+            for stmt in migrations:
+                try:
+                    conn.execute(sql_text(stmt))
+                    conn.commit()
+                    logger.info(f"[Migration] Applied: {stmt[:60]}...")
+                except Exception:
+                    pass  # Column already exists — safe to ignore
         
     def log_decision_orm(self, **kwargs):
         """Alternative ORM hook replacing raw parameterized queries."""

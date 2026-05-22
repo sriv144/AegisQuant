@@ -38,12 +38,17 @@ class TradingAnalystAgent(BaseAgent):
         super().__init__(
             name="Trading_Analyst",
             role=(
-                "You are the Chief Trading Analyst at an AI hedge fund. "
-                "You make the FINAL buy/hold/sell decision for each stock. "
-                "You analyze technical indicators, research agent opinions, "
-                "strategy signals, and market conditions to form your own view. "
-                "You explain your reasoning clearly. You are long-only — you "
-                "never short. You think like the best trader in the world."
+                "You are a long-term value investor in the style of Warren Buffett. "
+                "You invest in WONDERFUL companies at FAIR prices and hold them for years. "
+                "You think in business terms, not price terms. Your goal is to compound "
+                "capital over the long run — you are NOT a trader chasing short-term moves. "
+                "You only EXIT a position when: (1) the business thesis is broken, "
+                "(2) the price is dangerously overvalued, or (3) a better opportunity "
+                "requires the capital. You NEVER exit because of a bad week or short-term "
+                "price noise. If a quality company you hold dips 5-10%, that is a BUYING "
+                "opportunity, not a reason to sell — unless the underlying business has changed. "
+                "You are long-only and patient. Favor HOLD over EXIT in ambiguous situations. "
+                "Be greedy when others are fearful (VIX spikes) and patient when others are greedy."
             ),
         )
 
@@ -74,45 +79,51 @@ class TradingAnalystAgent(BaseAgent):
         agent_summary = self._format_agent_signals(agent_signals)
         strategy_summary = self._format_strategy_signals(strategy_signals)
 
-        prompt = f"""Analyze {ticker} (current price: ${current_price:.2f}) and make a trading decision.
+        position_status = (
+            "HELD (core long-term position — only EXIT if the business thesis is broken)"
+            if is_held else "NEW candidate (not currently held)"
+        )
+        vix = portfolio_state.get("vix_raw", 20)
+        vix_context = (
+            "HIGH — be greedy when others are fearful, look for buying opportunities"
+            if vix > 25 else "Normal"
+        )
 
-## Your Portfolio
+        prompt = f"""Analyze {ticker} and decide whether to BUY, HOLD, or EXIT as a long-term value investor.
+
+## Portfolio Context
 - Portfolio value: ${portfolio_state.get('portfolio_value', 100000):,.0f}
 - Current drawdown: {portfolio_state.get('current_drawdown', 0):.2%}
-- VIX (market fear): {portfolio_state.get('vix_raw', 20):.1f}
-- Currently holding {ticker}: {"YES" if is_held else "NO"}
+- VIX (fear gauge): {vix:.1f} — {vix_context}
+- Position status: {position_status}
+- Current price: ${current_price:.2f}
 
-## Technical Indicators for {ticker}
+## Technical Indicators
 {key_indicators}
 
-## Research Agent Opinions (4 agents analyzed this stock)
+## Research Agent Opinions (4 agents)
 {agent_summary}
 
-## Strategy Signals (9 strategies scored this stock)
+## Strategy Signals (9 strategies)
 {strategy_summary}
 
-## Your Task
-You are LONG-ONLY. You can BUY, HOLD (do nothing), or EXIT (sell existing position).
+## Your Task (Buffett-style investor)
+You are LONG-ONLY. Think in YEARS, not days. Evaluate whether this is a wonderful business at a fair price.
 
-Think step by step:
-1. What is the overall trend and momentum telling you?
-2. Is the stock at an attractive entry point or overextended?
-3. What do the research agents agree/disagree on?
-4. Which trading strategy best fits this stock's current situation?
-5. What is the risk/reward here?
-
-Then decide:
-- BUY: You see a good opportunity. State your confidence (0.0-1.0) and suggested allocation (1-10% of portfolio).
-- HOLD: Not compelling enough to act. Already held positions stay.
-- EXIT: Only if currently held AND the position should be closed (e.g., momentum lost, stop-loss level, thesis broken).
+Decision rules:
+- BUY: The business is high-quality, reasonably priced, and agents/strategies show conviction.
+  Set confidence >= 0.55 for a core holding (10% allocation). 0.40-0.54 for a smaller tactical bet.
+- HOLD: The thesis is intact. Short-term noise doesn't change the long-term story. Default for held positions.
+- EXIT: ONLY if (1) thesis is broken, (2) price is dangerously overvalued, or (3) capital needed elsewhere.
+  Do NOT exit because of a -5% to -10% drawdown on a quality company — that's normal volatility.
 
 Respond with ONLY a JSON object:
 {{
     "action": "BUY" | "HOLD" | "EXIT",
     "confidence": <float 0.0 to 1.0>,
     "allocation_pct": <float 0.01 to 0.10, only if BUY>,
-    "reasoning": "<2-3 sentences explaining your decision — what you see, why you decided this, what strategy approach you're using>",
-    "strategy_used": "<which approach: momentum, mean_reversion, trend_following, breakout, value, contrarian, or mixed>"
+    "reasoning": "<2-3 sentences: what the business fundamentals and signals show, why you made this decision>",
+    "strategy_used": "<value, quality_growth, momentum, contrarian, or mixed>"
 }}"""
 
         # Compute deterministic fallback
@@ -245,57 +256,72 @@ Respond with ONLY a JSON object:
             if s.get("action") == "LONG":
                 reasons.append(f"{s.get('strategy', '?')}: {s.get('rationale', '')[:60]}")
 
-        # Check for EXIT signals on held positions
+        # EXIT logic — Buffett-style: only on genuinely broken thesis
+        # A simple -5% or -10% dip is NOT a reason to exit a quality company
         if is_held:
-            # Check momentum and RSI for deterioration
             rsi_z = indicators.get("RSI_14_Z", 0.0)
             mom_z = indicators.get("mom_12m_Z", 0.0)
             bb_pos = indicators.get("BB_Position", 0.5)
 
-            if mom_z < -1.0 and rsi_z > 1.5:
+            # Only exit on severe simultaneous deterioration (all 3 signals agree)
+            if mom_z < -1.5 and rsi_z > 1.5 and bb_pos < 0.15:
                 return {
                     "action": "EXIT",
-                    "confidence": 0.6,
+                    "confidence": 0.65,
                     "allocation_pct": 0.0,
-                    "reasoning": f"Momentum deteriorating (mom_z={mom_z:.2f}) while RSI overbought (rsi_z={rsi_z:.2f}). Closing position.",
-                    "strategy_used": "risk_management",
-                }
-            if bb_pos < 0.05 and mom_z < -0.5:
-                return {
-                    "action": "EXIT",
-                    "confidence": 0.55,
-                    "allocation_pct": 0.0,
-                    "reasoning": f"Price near lower Bollinger Band (BB={bb_pos:.3f}) with negative momentum. Protecting capital.",
+                    "reasoning": (
+                        f"Multiple severe deterioration signals: momentum={mom_z:.2f}, "
+                        f"RSI={rsi_z:.2f}, price at extreme low (BB={bb_pos:.3f}). "
+                        "Business thesis appears broken — exiting."
+                    ),
                     "strategy_used": "risk_management",
                 }
 
-        # Decision thresholds (soft, not rigid)
-        if consensus >= 0.35 and avg_conf >= 0.4:
-            # Strong agreement — BUY
-            allocation = min(0.10, 0.03 + consensus * 0.07)
+        # BUY decision thresholds — higher bar than before to reduce churn
+        # Strong conviction: consensus >= 45% AND avg confidence >= 45%
+        if consensus >= 0.45 and avg_conf >= 0.45:
+            allocation = min(0.10, 0.04 + consensus * 0.06)
             return {
                 "action": "BUY",
                 "confidence": round(min(0.9, avg_conf), 4),
                 "allocation_pct": round(allocation, 4),
-                "reasoning": f"Consensus={consensus:.0%} across {agent_long} agents + {strategy_long} strategies. " + "; ".join(reasons[:2]),
-                "strategy_used": "consensus",
+                "reasoning": (
+                    f"Strong consensus={consensus:.0%} ({agent_long} agents, {strategy_long} strategies). "
+                    + "; ".join(reasons[:2])
+                ),
+                "strategy_used": "quality_consensus",
             }
-        elif consensus >= 0.20 and avg_conf >= 0.5:
-            # Moderate agreement with high conviction — smaller BUY
-            allocation = min(0.06, 0.02 + consensus * 0.04)
+        # Moderate consensus but very high individual conviction
+        elif consensus >= 0.30 and avg_conf >= 0.55:
+            allocation = min(0.05, 0.02 + consensus * 0.03)
             return {
                 "action": "BUY",
-                "confidence": round(min(0.7, avg_conf * 0.8), 4),
+                "confidence": round(min(0.70, avg_conf * 0.85), 4),
                 "allocation_pct": round(allocation, 4),
-                "reasoning": f"Moderate consensus={consensus:.0%} but high conviction signals. " + "; ".join(reasons[:2]),
-                "strategy_used": "selective",
+                "reasoning": (
+                    f"Moderate consensus={consensus:.0%} but high-conviction signals (avg_conf={avg_conf:.2f}). "
+                    + "; ".join(reasons[:2])
+                ),
+                "strategy_used": "selective_quality",
             }
         else:
+            # Default: HOLD — patience is a Buffett virtue
+            action = "HOLD"
+            hold_reason = (
+                f"Consensus too low ({consensus:.0%}) or conviction insufficient "
+                f"({agent_long}/{agent_total} agents, {strategy_long}/{strategy_total} strategies favor LONG). "
+                "Holding cash; waiting for better opportunity."
+            )
+            if is_held:
+                hold_reason = (
+                    f"Currently held — maintaining position. Consensus={consensus:.0%} with "
+                    f"{agent_long}/{agent_total} agents bullish. No compelling reason to exit."
+                )
             return {
-                "action": "HOLD",
-                "confidence": 0.3,
+                "action": action,
+                "confidence": 0.35,
                 "allocation_pct": 0.0,
-                "reasoning": f"Insufficient consensus ({consensus:.0%}) — {agent_long}/{agent_total} agents and {strategy_long}/{strategy_total} strategies favor LONG.",
+                "reasoning": hold_reason,
                 "strategy_used": "none",
             }
 
