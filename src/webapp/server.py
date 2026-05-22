@@ -11,6 +11,15 @@ Features:
 """
 
 import os
+
+# Load .env before anything else so ALPACA_API_KEY etc. are available when the server starts.
+# Works whether launched with `uvicorn` directly or via `python -m src.webapp.server`.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed — env vars must be set externally
+
 import json
 import asyncio
 import hashlib
@@ -208,7 +217,7 @@ def _build_live_snapshot() -> dict:
                 "FROM daily_pnl ORDER BY date DESC LIMIT 1"
             )).fetchone()
 
-            # Open positions count
+            # Open positions count — also check live Alpaca if DB is empty
             pos_row = conn.execute(text(
                 "SELECT COUNT(*) FROM open_positions WHERE status = 'OPEN'"
             )).fetchone()
@@ -218,9 +227,29 @@ def _build_live_snapshot() -> dict:
                 "SELECT timestamp, circuit_breaker_status FROM decisions ORDER BY id DESC LIMIT 1"
             )).fetchone()
 
-        pv = float(pv_row[1]) if pv_row else DEFAULT_CAPITAL
-        dd = float(pv_row[2]) if pv_row else 0.0
-        pnl = float(pv_row[3]) if pv_row else 0.0
+        # Use DB values if they're non-placeholder; otherwise fall back to live Alpaca
+        db_is_placeholder = (
+            not pv_row
+            or float(pv_row[1]) == DEFAULT_CAPITAL
+        )
+        if db_is_placeholder:
+            live = _alpaca_portfolio_live()
+            pv = live.get("current_value", DEFAULT_CAPITAL)
+            dd = live.get("drawdown", 0.0)
+            pnl = live.get("total_pnl", 0.0)
+        else:
+            pv = float(pv_row[1])
+            dd = float(pv_row[2])
+            pnl = float(pv_row[3])
+
+        # Open positions: prefer DB count; fall back to live Alpaca count
+        open_count = pos_row[0] if pos_row and pos_row[0] > 0 else 0
+        if open_count == 0:
+            try:
+                live_positions = _alpaca_positions_live()
+                open_count = len(live_positions)
+            except Exception:
+                pass
 
         return {
             "type": "snapshot",
@@ -228,7 +257,7 @@ def _build_live_snapshot() -> dict:
             "portfolio_value": pv,
             "drawdown": dd,
             "total_pnl": pnl,
-            "open_positions": pos_row[0] if pos_row else 0,
+            "open_positions": open_count,
             "last_decision_ts": dec_row[0] if dec_row else None,
             "circuit_breaker": dec_row[1] if dec_row else "OK",
         }
@@ -272,6 +301,51 @@ def _alpaca_portfolio_live() -> dict:
         return {}
 
 
+def _alpaca_history_live() -> list:
+    """
+    Fetch 1-month daily equity history from Alpaca portfolio history API.
+    Returns list of {date, total_portfolio_value, drawdown, total_pnl} dicts.
+    """
+    try:
+        api_key = os.getenv("ALPACA_API_KEY", "")
+        secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        if not api_key or not secret_key:
+            return []
+        from alpaca.trading.client import TradingClient
+        client = TradingClient(
+            api_key=api_key,
+            secret_key=secret_key,
+            paper="paper" in base_url.lower(),
+        )
+        # alpaca-py uses keyword args; period="1M" gives ~30 days of daily bars
+        try:
+            from alpaca.trading.requests import GetPortfolioHistoryRequest
+            hist = client.get_portfolio_history(
+                GetPortfolioHistoryRequest(period="1M", timeframe="1D", extended_hours=False)
+            )
+        except Exception:
+            # Older alpaca-py versions
+            hist = client.get_portfolio_history(period="1M", timeframe="1D")
+
+        records = []
+        for ts, equity in zip(hist.timestamp or [], hist.equity or []):
+            if equity is None or equity <= 0:
+                continue
+            date_str = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            eq = float(equity)
+            records.append({
+                "date": date_str,
+                "total_portfolio_value": round(eq, 2),
+                "drawdown": round(max(0.0, (DEFAULT_CAPITAL - eq) / DEFAULT_CAPITAL), 4),
+                "total_pnl": round(eq - DEFAULT_CAPITAL, 2),
+            })
+        return records
+    except Exception as e:
+        logger.warning(f"_alpaca_history_live: {e}")
+        return []
+
+
 @app.get("/api/portfolio")
 def get_portfolio(_auth=Depends(require_auth)):
     """Return historical portfolio values and current metrics. Falls back to live Alpaca."""
@@ -284,10 +358,18 @@ def get_portfolio(_auth=Depends(require_auth)):
         with engine.connect() as conn:
             df = pd.read_sql(query, conn)
 
-        if df.empty:
+        # Treat DB as placeholder if empty OR all rows are exactly at starting capital
+        # (means the pipeline hasn't run yet or daily_pnl was never properly updated)
+        placeholder = df.empty or (
+            len(df) <= 2
+            and float(df["total_portfolio_value"].max()) == DEFAULT_CAPITAL
+        )
+
+        if placeholder:
             live = _alpaca_portfolio_live()
             if live:
-                return live
+                live_hist = _alpaca_history_live()
+                return {**live, "history": live_hist if live_hist else live["history"]}
             return {"history": [], "current_value": DEFAULT_CAPITAL, "drawdown": 0.0, "total_pnl": 0.0}
 
         latest = df.iloc[-1]
@@ -318,26 +400,36 @@ def get_benchmark(_auth=Depends(require_auth)):
     """
     Return benchmark normalized performance to overlay on portfolio chart.
     US: S&P 500 (^GSPC), India: Nifty 50 (^NSEI).
+    Falls back to last 35 days when daily_pnl DB is empty (before first pipeline run).
     """
     try:
+        import math
+        import yfinance as yf
+
         engine = get_engine()
         with engine.connect() as conn:
             dates = conn.execute(text(
                 "SELECT MIN(date), MAX(date) FROM daily_pnl"
             )).fetchone()
 
+        # If DB is empty or has only placeholder rows, use last 35 days as default range
         if not dates or not dates[0]:
-            return {"benchmark": [], "label": BENCHMARK_LABEL}
+            end = datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.now() - timedelta(days=35)).strftime("%Y-%m-%d")
+            initial_pv = DEFAULT_CAPITAL
+        else:
+            start_date, end_date = dates
+            try:
+                start = (datetime.fromisoformat(start_date) - timedelta(days=5)).strftime("%Y-%m-%d")
+                end = (datetime.fromisoformat(end_date) + timedelta(days=1)).strftime("%Y-%m-%d")
+            except Exception:
+                start, end = start_date, end_date
+            with engine.connect() as conn:
+                init_row = conn.execute(text(
+                    "SELECT total_portfolio_value FROM daily_pnl ORDER BY date ASC LIMIT 1"
+                )).fetchone()
+            initial_pv = float(init_row[0]) if init_row else DEFAULT_CAPITAL
 
-        start_date, end_date = dates
-        try:
-            from datetime import datetime as dt
-            start = (dt.fromisoformat(start_date) - timedelta(days=5)).strftime("%Y-%m-%d")
-            end = (dt.fromisoformat(end_date) + timedelta(days=1)).strftime("%Y-%m-%d")
-        except Exception:
-            start, end = start_date, end_date
-
-        import yfinance as yf
         bench_data = yf.download(BENCHMARK_SYMBOL, start=start, end=end, auto_adjust=True, progress=False)
         if bench_data.empty:
             return {"benchmark": [], "label": BENCHMARK_LABEL}
@@ -346,17 +438,17 @@ def get_benchmark(_auth=Depends(require_auth)):
         if hasattr(close, "columns"):
             close = close.iloc[:, 0]
 
-        with engine.connect() as conn:
-            init_row = conn.execute(text(
-                "SELECT total_portfolio_value FROM daily_pnl ORDER BY date ASC LIMIT 1"
-            )).fetchone()
-        initial_pv = float(init_row[0]) if init_row else DEFAULT_CAPITAL
-
         first_close = float(close.iloc[0])
+        if first_close == 0:
+            return {"benchmark": [], "label": BENCHMARK_LABEL}
+
         records = []
         for date, val in close.items():
             date_str = date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date)[:10]
             normalized = initial_pv * (float(val) / first_close)
+            # Guard against NaN / Inf which break JSON serialization
+            if math.isnan(normalized) or math.isinf(normalized):
+                continue
             records.append({"date": date_str, "value": round(normalized, 2)})
 
         return {"benchmark": records, "label": f"{BENCHMARK_LABEL} (normalized)"}
@@ -624,6 +716,29 @@ def get_latest_run(_auth=Depends(require_auth)):
             capital_alloc = abs(w) * portfolio_value
             price = latest_prices.get(ticker)
             est_shares = int(capital_alloc / price) if price and price > 0 else None
+
+            # Normalize reasoning keys so frontend always finds what it expects
+            r_data = dict(reasoning.get(ticker, {}))
+            # Map analyst_reasoning → reasoning  (app.js looks for r.reasoning)
+            if not r_data.get("reasoning"):
+                r_data["reasoning"] = r_data.get("analyst_reasoning", "")
+            # Map agent_signals → research_signals (app.js looks for agent_name field)
+            if "agent_signals" in r_data and "research_signals" not in r_data:
+                r_data["research_signals"] = [
+                    {
+                        "agent_name": s.get("agent", "?"),
+                        "action": s.get("action", "HOLD"),
+                        "confidence": float(s.get("confidence", 0)),
+                    }
+                    for s in r_data["agent_signals"]
+                ]
+            # Build a committee stub if not present so r.committee.reasoning resolves
+            if not r_data.get("committee") and r_data.get("reasoning"):
+                r_data["committee"] = {
+                    "reasoning": r_data["reasoning"],
+                    "strategy": r_data.get("strategy_used", "--"),
+                }
+
             positions.append({
                 "ticker": ticker,
                 "weight_pct": round(w * 100, 2),
@@ -632,7 +747,7 @@ def get_latest_run(_auth=Depends(require_auth)):
                 "rupees": round(capital_alloc, 0),  # backward compat
                 "last_price": round(price, 2) if price else None,
                 "est_shares": est_shares,
-                "reasoning": reasoning.get(ticker, {}),
+                "reasoning": r_data,
             })
 
         positions.sort(key=lambda x: -abs(x["weight_pct"]))
@@ -727,8 +842,8 @@ def get_circuits(_auth=Depends(require_auth)):
              "description": "Per-ticker concentration cap"},
             {"name": "TimeWindowRule", "trip": "09:35-15:55 ET", "status": "armed",
              "description": "NYSE trading hours only"},
-            {"name": "PositionStopLoss", "trip": "-8%", "status": "armed",
-             "description": "Per-position stop loss"},
+            {"name": "PositionStopLoss", "trip": "-15% core / -7% tactical", "status": "armed",
+             "description": "Per-position stop loss (Buffett-style: wide for core, tight for tactical)"},
         ]
         return {"circuits": circuits, "total": len(circuits), "all_armed": True}
     except Exception as e:

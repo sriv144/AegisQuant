@@ -270,7 +270,23 @@ class USUniverseScreener:
                 rsi = latest.get("RSI_14", 50)
                 rsi_score = 1.0 if 35 < rsi < 70 else 0.7
 
-                combined_score = momentum_score * 0.6 + vol_score * 0.2 + rsi_score * 0.2
+                # Buffett quality bonus — favor wonderful businesses at fair prices
+                BUFFETT_FAVORITES = {
+                    "AAPL", "KO", "AXP", "BAC", "JPM", "V", "MA", "JNJ",
+                    "PG", "WMT", "COST", "UNH", "CVX", "OXY", "AMZN", "MSFT",
+                    "GOOGL", "BRK-B", "MCO", "SCHW",
+                }
+                QUALITY_SECTORS = {"CONSUMER", "FINANCE", "HEALTH", "INDUSTRIAL", "TECH"}
+                sector = SECTOR_MAP.get(ticker.upper(), "OTHER")
+                quality_bonus = 0.05 if ticker.upper() in BUFFETT_FAVORITES else 0.0
+                quality_bonus += 0.02 if sector in QUALITY_SECTORS else 0.0
+
+                combined_score = (
+                    momentum_score * 0.50
+                    + vol_score * 0.15
+                    + rsi_score * 0.15
+                    + quality_bonus * 0.20
+                )
                 scored.append((ticker, combined_score))
             except Exception as e:
                 logger.debug(f"[USUniverseScreener] Opportunity filter failed for {ticker}: {e}")
@@ -280,16 +296,26 @@ class USUniverseScreener:
         return scored[:50]
 
     def _apply_diversification_filters(self, scored_tickers: List[tuple], open_positions: Dict) -> List[str]:
-        """Stage 4: Max 5 stocks per sector, exclude open positions."""
+        """
+        Stage 4: Max 5 stocks per sector.
+
+        Buffett change: held positions are INCLUDED (not excluded) so the analyst
+        re-evaluates every holding each cycle.  They get a 'continuity pass' that
+        bypasses the sector-count cap — we always want to re-examine what we own.
+        """
         sector_counts = {}
         result = []
         open_tickers = set(open_positions.keys())
 
         for ticker, score in scored_tickers:
+            sector = SECTOR_MAP.get(ticker.upper(), "OTHER")
+
             if ticker in open_tickers:
+                # Always include held positions for re-evaluation
+                result.append(ticker)
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
                 continue
 
-            sector = SECTOR_MAP.get(ticker.upper(), "OTHER")
             if sector_counts.get(sector, 0) >= 5:
                 continue
 

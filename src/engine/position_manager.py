@@ -1,15 +1,19 @@
 """
-Position Manager for NSE Trading
-=================================
+Position Manager
+================
 Tracks open CNC (delivery) positions persistently across daily runs.
 Enforces stop-loss, take-profit, and aging exits.
 Persists to SQLite OpenPosition table.
+
+Two-tranche Buffett model:
+  CORE    (80%) — quality holds, SL=-15%, TP=+40%, 180 days
+  TACTICAL (20%) — quality opportunities, SL=-7%,  TP=+15%, 20 days
 """
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, select
@@ -31,6 +35,8 @@ class Position:
     take_profit_pct: float   # e.g., 0.20 = +20%
     max_hold_days: int       # max days to hold (60-90)
     sector: str = "OTHER"    # stock sector for diversification
+    tranche: str = "CORE"    # "CORE" (80% allocation, long-hold) or "TACTICAL" (20%, shorter)
+    opened_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     status: str = "OPEN"     # "OPEN" or "CLOSED"
     exit_price: Optional[float] = None
     exit_date: Optional[str] = None
@@ -74,8 +80,15 @@ class Position:
         return None
 
     @classmethod
-    def default_cnc(cls, ticker: str, entry_price: float, quantity: int, strategy: str, sector: str = "OTHER") -> "Position":
-        """Factory: create a default CNC position."""
+    def default_cnc(
+        cls, ticker: str, entry_price: float, quantity: int,
+        strategy: str, sector: str = "OTHER", tranche: str = "CORE"
+    ) -> "Position":
+        """
+        Factory: create a default CNC (core) position.
+        Buffett-style: wide stop-loss, generous TP, long hold period.
+        """
+        now = datetime.now(timezone.utc).isoformat()
         return cls(
             ticker=ticker,
             entry_price=entry_price,
@@ -83,15 +96,43 @@ class Position:
             quantity=quantity,
             trade_type="CNC",
             strategy=strategy,
-            stop_loss_pct=0.08,  # -8%
-            take_profit_pct=0.20,  # +20%
-            max_hold_days=90,
+            stop_loss_pct=0.15,    # -15% — let quality companies breathe
+            take_profit_pct=0.40,  # +40% — hold for compounding
+            max_hold_days=180,     # 6 months
             sector=sector,
+            tranche=tranche,
+            opened_at=now,
+        )
+
+    @classmethod
+    def default_tactical(
+        cls, ticker: str, entry_price: float, quantity: int,
+        strategy: str, sector: str = "OTHER"
+    ) -> "Position":
+        """
+        Factory: create a TACTICAL position (20% tranche).
+        Tighter stop-loss and take-profit, shorter max hold.
+        Only quality companies (BUFFETT_FAVORITES / QUALITY_SECTORS) should be here.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        return cls(
+            ticker=ticker,
+            entry_price=entry_price,
+            entry_date=datetime.now().isoformat(),
+            quantity=quantity,
+            trade_type="CNC",
+            strategy=strategy,
+            stop_loss_pct=0.07,    # -7% tighter stop
+            take_profit_pct=0.15,  # +15% quicker profit-take
+            max_hold_days=20,
+            sector=sector,
+            tranche="TACTICAL",
+            opened_at=now,
         )
 
     @classmethod
     def default_mis(cls, ticker: str, entry_price: float, quantity: int, strategy: str) -> "Position":
-        """Factory: create a default MIS position."""
+        """Factory: create a default MIS (intraday) position."""
         return cls(
             ticker=ticker,
             entry_price=entry_price,
@@ -137,6 +178,8 @@ class PositionManager:
                     "take_profit_pct": row.take_profit_pct,
                     "max_hold_days": row.max_hold_days,
                     "sector": row.sector or "OTHER",
+                    "tranche": getattr(row, "tranche", None) or "CORE",
+                    "opened_at": getattr(row, "opened_at", None) or "",
                     "status": row.status,
                     "exit_price": row.exit_price,
                     "exit_date": row.exit_date,
@@ -144,7 +187,7 @@ class PositionManager:
                     "pnl_pct": row.pnl_pct,
                 }
                 self._positions_cache[row.ticker] = Position(**pos_dict)
-                logger.info(f"[PositionManager] Loaded position: {row.ticker} ({row.quantity}x @ {row.entry_price})")
+                logger.info(f"[PositionManager] Loaded position: {row.ticker} ({row.quantity}x @ {row.entry_price}) [{pos_dict['tranche']}]")
             session.close()
         except Exception as e:
             logger.warning(f"[PositionManager] Failed to load positions from DB: {e}")
@@ -266,6 +309,8 @@ class PositionManager:
                 existing.take_profit_pct = position.take_profit_pct
                 existing.max_hold_days = position.max_hold_days
                 existing.sector = position.sector
+                existing.tranche = position.tranche
+                existing.opened_at = position.opened_at
                 existing.status = position.status
                 existing.exit_price = position.exit_price
                 existing.exit_date = position.exit_date
@@ -284,6 +329,8 @@ class PositionManager:
                     take_profit_pct=position.take_profit_pct,
                     max_hold_days=position.max_hold_days,
                     sector=position.sector,
+                    tranche=position.tranche,
+                    opened_at=position.opened_at,
                     status=position.status,
                     exit_price=position.exit_price,
                     exit_date=position.exit_date,

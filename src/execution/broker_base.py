@@ -136,7 +136,7 @@ class BaseBroker(ABC):
         except Exception:
             pass  # If broker doesn't support get_positions, treat as empty
 
-        noise_threshold = portfolio_value * 0.005  # 0.5% of portfolio
+        noise_threshold = portfolio_value * 0.020  # 2% of portfolio — Buffett anti-churn threshold
 
         for i, ticker in enumerate(tickers):
             weight = float(target_weights[i])
