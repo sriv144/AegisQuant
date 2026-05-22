@@ -42,7 +42,7 @@ with tab_live:
         """Load the most recent decisions from the SQLite audit DB."""
         try:
             from sqlalchemy import create_engine, text
-            db_url = os.getenv("POSTGRES_URL", f"sqlite:///{DB_PATH}")
+            db_url = os.getenv("POSTGRES_URL") or f"sqlite:///{DB_PATH}"
             engine = create_engine(db_url)
             query = text(
                 "SELECT id, timestamp, circuit_breaker_status, model_version, "

@@ -1,4 +1,4 @@
-from typing import TypedDict, Annotated, Sequence, Any, Dict, List
+from typing import TypedDict, Annotated, Sequence, Any, Dict, List, NotRequired
 import operator
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,10 @@ class AgentState(TypedDict):
 
     # Global/Portfolio context
     portfolio_state: Dict[str, Any]
+
+    # Persistent agent memory (seeded from memory/*.md at run start).
+    # Keys: "strategy", "learnings", "recent_trades". Optional: agents may ignore.
+    context_memory: NotRequired[Dict[str, str]]
 
 class GenericAgentDecision(BaseModel):
     """

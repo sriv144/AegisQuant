@@ -1,0 +1,141 @@
+{
+  "generated_at": "2026-05-12T01:13:39.472788+00:00",
+  "tickers": [
+    "SPY",
+    "QQQ",
+    "TLT",
+    "GLD"
+  ],
+  "verdict": "FAILED_RISK_GATE",
+  "aggregate": {
+    "annualised_return": -0.6347,
+    "annualised_volatility": 0.1766,
+    "sharpe_ratio": -5.6909,
+    "sortino_ratio": -7.3889,
+    "max_drawdown": -0.9997,
+    "calmar_ratio": -0.6348,
+    "win_rate": 0.3277,
+    "profit_factor": 0.3528,
+    "deflated_sharpe_ratio": 0.0
+  },
+  "oos_returns_count": 1999,
+  "window_count": 16,
+  "failed_window_count": 0,
+  "benchmarks": [
+    {
+      "name": "momentum_12_1",
+      "label": "12-1 Month Momentum",
+      "sharpe_ratio": 5.3178,
+      "annualised_return": 0.209,
+      "max_drawdown": -0.3035,
+      "rl_sharpe_delta": -11.0087
+    },
+    {
+      "name": "equal_weight_monthly",
+      "label": "Equal-Weight Monthly (SPY,QQQ,TLT,GLD)",
+      "sharpe_ratio": 1.0141,
+      "annualised_return": 0.1305,
+      "max_drawdown": -0.256,
+      "rl_sharpe_delta": -6.705
+    },
+    {
+      "name": "60_40_spy_agg",
+      "label": "60/40 SPY+AGG",
+      "sharpe_ratio": 0.8063,
+      "annualised_return": 0.1034,
+      "max_drawdown": -0.2172,
+      "rl_sharpe_delta": -6.4972
+    },
+    {
+      "name": "buy_hold_spy",
+      "label": "Buy & Hold SPY",
+      "sharpe_ratio": 0.7781,
+      "annualised_return": 0.1634,
+      "max_drawdown": -0.3372,
+      "rl_sharpe_delta": -6.469
+    },
+    {
+      "name": "random_policy",
+      "label": "Random Policy (same env)",
+      "sharpe_ratio": -2.1941,
+      "annualised_return": -0.1814,
+      "max_drawdown": -0.8044,
+      "rl_sharpe_delta": -3.4968
+    },
+    {
+      "name": "rl_strategy",
+      "label": "AegisQuant RL Strategy",
+      "sharpe_ratio": -5.6909,
+      "annualised_return": -0.6347,
+      "max_drawdown": -0.9997,
+      "rl_sharpe_delta": 0.0
+    }
+  ],
+  "monte_carlo": {
+    "sharpe_p5": -7.5566,
+    "sharpe_p25": -6.5048,
+    "sharpe_p50": -5.7492,
+    "sharpe_p75": -5.0224,
+    "sharpe_p95": -3.9943,
+    "sharpe_mean": -5.7668,
+    "sharpe_std": 1.0902,
+    "ann_return_p5": -0.7295,
+    "ann_return_p50": -0.6351,
+    "ann_return_p95": -0.5125,
+    "max_dd_p5": -0.7353,
+    "max_dd_p50": -0.6452,
+    "max_dd_p95": -0.5304,
+    "probability_of_ruin": 0.9999,
+    "ruin_threshold": 0.3,
+    "cum_return_p5": -0.7338,
+    "cum_return_p50": -0.6407,
+    "cum_return_p95": -0.52,
+    "strategy_half_life_days": 21,
+    "n_simulations": 10000,
+    "horizon_days": 252,
+    "n_input_returns": 1999,
+    "full_period_sharpe": -5.6909
+  },
+  "top_features": [
+    [
+      "GLD_macd",
+      0.044727
+    ],
+    [
+      "TLT_rsi",
+      0.042908
+    ],
+    [
+      "QQQ_rsi",
+      0.042511
+    ],
+    [
+      "QQQ_macd",
+      0.041727
+    ],
+    [
+      "GLD_mom",
+      0.041606
+    ],
+    [
+      "GLD_vol",
+      0.040258
+    ],
+    [
+      "TLT_macd",
+      0.039303
+    ],
+    [
+      "SPY_rsi",
+      0.038328
+    ],
+    [
+      "TLT_vol",
+      0.037691
+    ],
+    [
+      "SPY_vol",
+      0.036364
+    ]
+  ]
+}

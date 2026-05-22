@@ -10,6 +10,7 @@ from .research.quant_agent import quant_agent
 from .research.fundamental_agent import fundamental_agent
 from .research.macro_agent import macro_agent
 from .research.sentiment_agent import sentiment_agent
+from .research.strategy_runner_agent import strategy_runner_agent
 
 from .executive.strategy_committee_agent import strategy_committee_agent
 from .executive.strategy_selector_agent import strategy_selector_agent
@@ -68,8 +69,15 @@ class WorkflowOrchestrator:
         f_res = fundamental_agent.invoke(state)
         m_res = macro_agent.invoke(state)
         s_res = sentiment_agent.invoke(state)
+        strat_res = strategy_runner_agent.invoke(state)
         
-        signals = q_res['research_signals'] + f_res['research_signals'] + m_res['research_signals'] + s_res['research_signals']
+        signals = (
+            q_res['research_signals']
+            + f_res['research_signals']
+            + m_res['research_signals']
+            + s_res['research_signals']
+            + strat_res['research_signals']
+        )
         return {"research_signals": signals}
 
     def _strategy_selector_node(self, state: AgentState) -> Dict[str, Any]:

@@ -28,6 +28,17 @@ cp .env.example .env
 
 ## Running the Matrix
 
+### 0. Backtest Audit Report
+To turn an existing walk-forward JSON artifact into an honest Markdown + JSON audit report:
+```bash
+python -m src.backtest.reporting --input backtest_results/walk_forward_multi_SPY_QQQ_TLT_GLD.json
+```
+This writes:
+- `backtest_results/audit_multi_SPY_QQQ_TLT_GLD_report.md`
+- `backtest_results/audit_multi_SPY_QQQ_TLT_GLD_summary.json`
+
+The audit report is deliberately transparent. If the RL strategy fails against benchmarks or risk gates, the report says so plainly instead of presenting AegisQuant as a profitable trading bot.
+
 ### 1. The Walk-Forward Backtester
 To train the PPO model from scratch across chronological cross-fold validations mapping 10 years of OHLCV:
 ```bash

@@ -14,6 +14,9 @@ class BaseAgent:
         self.model_name = model_name
         self.llm = None
 
+        if os.getenv("ENABLE_LLM_AGENTS", "True").lower() != "true":
+            return
+
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
             try:
@@ -49,6 +52,35 @@ class BaseAgent:
         if additional_instructions:
             base += f"\n\nSpecial Instructions: {additional_instructions}"
         return base
+
+    def _format_memory_context(self, state: Dict[str, Any], max_chars: int = 4500) -> str:
+        """
+        Render concise persistent memory blocks for prompts.
+
+        The memory is markdown maintained by journal.py. Keep it bounded so it
+        informs the agents without swallowing the prompt budget.
+        """
+        memory = state.get("context_memory") or {}
+        if not isinstance(memory, dict):
+            return ""
+
+        labels = [
+            ("strategy", "Persistent strategy rules"),
+            ("learnings", "Recent weekly learnings"),
+            ("recent_trades", "Recent trade log"),
+        ]
+        blocks = []
+        for key, label in labels:
+            value = str(memory.get(key) or "").strip()
+            if not value:
+                continue
+            if len(value) > max_chars:
+                value = value[-max_chars:]
+            blocks.append(f"{label}:\n{value}")
+
+        if not blocks:
+            return ""
+        return "\n\nPersistent agent memory:\n" + "\n\n".join(blocks)
 
     def invoke(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """

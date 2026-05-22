@@ -42,6 +42,7 @@ class StrategySelectorAgent(BaseAgent):
 
         # Select current strategy (top performer or first if no scores)
         current_strategy = active_strategies[0] if active_strategies else "momentum"
+        memory_context = self._format_memory_context(state)
 
         prompt = f"""
         Current market regime:
@@ -54,6 +55,8 @@ class StrategySelectorAgent(BaseAgent):
 
         Active strategy candidates: {active_strategies}
         Current primary strategy: {current_strategy}
+
+        {memory_context}
 
         Confirm or adjust the strategy selection based on the regime and performance.
         Produce a JSON output:

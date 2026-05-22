@@ -1,3 +1,6 @@
+# DEPRECATED: This environment trains on random noise.
+# Use src/backtest/historical_env.py for real training.
+
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces

@@ -8,9 +8,14 @@ Initial split: 20% intraday / 80% delivery.
 
 import logging
 import json
+import os
 from typing import Tuple, Dict, Optional
 from datetime import datetime, timedelta
 import numpy as np
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from src.db.models import Base, CapitalAllocatorState
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +40,56 @@ class CapitalAllocator:
         self.rl_enabled = False
         self.rl_model = None
         self.performance_history = []  # List of (week, intraday_pnl, delivery_pnl, ratio_used)
+        self.db_url = os.getenv("POSTGRES_URL") or "sqlite:///aegisquant_live.db"
+        self.engine = create_engine(self.db_url)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self._load_state()
 
         logger.info(
             f"[CapitalAllocator] Initialized with "
             f"{initial_intraday_ratio*100:.0f}% intraday / "
             f"{(1-initial_intraday_ratio)*100:.0f}% delivery"
         )
+
+    def _load_state(self) -> None:
+        """Restore allocator state from the most recent persisted row."""
+        session = self.Session()
+        try:
+            row = session.query(CapitalAllocatorState).order_by(CapitalAllocatorState.updated_at.desc()).first()
+            if not row:
+                return
+            self.current_intraday_ratio = float(row.current_intraday_ratio or self.initial_intraday_ratio)
+            self.rl_enabled = bool(row.rl_enabled)
+            try:
+                self.performance_history = json.loads(row.performance_history or "[]")
+            except Exception:
+                self.performance_history = []
+        except Exception as exc:
+            logger.warning(f"[CapitalAllocator] State restore failed: {exc}")
+        finally:
+            session.close()
+
+    def persist_state(self, as_of: Optional[str] = None) -> None:
+        """Persist current intraday/delivery split and history."""
+        as_of = as_of or datetime.utcnow().strftime("%Y-%m-%d")
+        session = self.Session()
+        try:
+            row = session.query(CapitalAllocatorState).filter(CapitalAllocatorState.as_of == as_of).first()
+            if row is None:
+                row = CapitalAllocatorState(as_of=as_of)
+                session.add(row)
+            row.current_intraday_ratio = float(self.current_intraday_ratio)
+            row.rl_enabled = 1 if self.rl_enabled else 0
+            row.weeks_of_data = int(len(self.performance_history))
+            row.performance_history = json.dumps(self.performance_history, default=str)
+            row.updated_at = datetime.utcnow().isoformat()
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            logger.warning(f"[CapitalAllocator] State persist failed: {exc}")
+        finally:
+            session.close()
 
     def get_budgets(self, portfolio_state: Optional[Dict] = None) -> Tuple[float, float]:
         """
@@ -130,6 +179,7 @@ class CapitalAllocator:
             )
 
         self.rl_enabled = True
+        self.persist_state()
 
     def to_dict(self) -> dict:
         """Serialize state for logging."""
