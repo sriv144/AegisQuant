@@ -8,3 +8,21 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Runtime artifacts that have leaked into the repo root before; keep them
+# out from now on.
+pytest_*.txt
+pytest_output.txt
+pytest_clean.txt
+pytest_run.txt
+run_log.txt
+logs/
+backtest_results/*.log
+
+# Files accidentally created by `pip install pkg=version` (= instead of ==)
+# redirecting stdout into a file literally named `=<version>`.
+=*
+
+# Large model checkpoints; keep registry directories, ignore *.zip blobs.
+*.zip
+!helm/**/*.zip
