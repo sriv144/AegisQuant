@@ -17,7 +17,13 @@ validation, depends on broker secrets).
 
 - Added `.github/workflows/tests.yml`: dedicated pytest workflow on push
   + PR. Sets `ENABLE_MOCK_DATA=True` and dummy broker keys so the
-  existing 17 test files run hermetically without hitting Alpaca.
+  existing test suite runs hermetically without hitting Alpaca. Scoped
+  discovery to `tests/` so the top-level `test_groww_connection.py`
+  (which makes live broker calls) is not collected. Ignored
+  `tests/test_regime_detector.py` because it is pre-existing-broken on
+  main: the repo-committed `pytest_run.txt` snapshot shows the same
+  hmmlearn LinAlgError on the Cholesky decomposition of a near-singular
+  covariance matrix produced by unseeded random feature data.
 - Expanded `.gitignore` to cover the recurring leaks: `pytest_*.txt`,
   `run_log.txt`, `logs/`, large `*.zip` checkpoints, and the `=*` glob
   that catches files named like `=0.2.36` from `pip install pkg=ver`
@@ -37,6 +43,11 @@ first 10 seconds of scanning a GitHub profile.
   GitHub MCP delete_file tool is a separate commit and would balloon the
   PR. Will land in a dedicated follow-up pass with one commit per
   deletion. The new `.gitignore` rules prevent recurrence.
+- Fixing `tests/test_regime_detector.py` properly (seed numpy, reshape
+  the synthetic features so the HMM converges). Out of scope for a
+  CI-bootstrap pass -- the test needs more than just `np.random.seed()`
+  because the rolling-std column is all zeros for the first 20 rows and
+  the resulting cov matrix is singular regardless of seed.
 - Refactoring `main_us.py` / `main_india.py` / `main.py` into a single
   market-parameterised entrypoint. The existing trade.yml workflow
   invokes `main_us.py` directly, so refactoring touches deployment as
@@ -47,6 +58,9 @@ first 10 seconds of scanning a GitHub profile.
 **Next-run candidates:**
 
 - One-commit-per-file cleanup pass to remove the root-level junk.
+- Fix `tests/test_regime_detector.py`: seed numpy + craft features that
+  produce a positive-definite covariance matrix, then drop the
+  --ignore.
 - README upgrade: add CI badge, architecture diagram (Mermaid), and
   performance numbers from the latest walk-forward audit report.
 - Optional: ruff + black pre-commit hooks gated by CI.
