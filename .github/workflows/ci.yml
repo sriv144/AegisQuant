@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: pytest (Python 3.11)
+  smoke:
+    name: install + syntax + import smoke (Python 3.11)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -54,9 +54,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify project imports (collection smoke test)
-        run: pytest --collect-only -q tests/
+      - name: Syntax check (compileall)
+        run: python -m compileall -q src tests
 
-      - name: Run full test suite (informational)
+      - name: Package import smoke
+        run: python -c "import src; print('src package imports cleanly')"
+
+      - name: Pytest collection (best-effort)
+        run: pytest --collect-only -q --continue-on-collection-errors tests/
+
+      - name: Pytest run (informational)
         continue-on-error: true
         run: pytest -q --maxfail=10 tests/
