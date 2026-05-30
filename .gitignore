@@ -8,3 +8,22 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Generated logs and pytest captures (do not commit)
+run_log.txt
+pytest_run.txt
+pytest_output.txt
+pytest_clean.txt
+pcr.txt
+
+# Trained model artifacts (ship via model_registry/ instead)
+ppo_curriculum_*.zip
+ppo_portfolio_manager.zip
+
+# Accidental pip-version capture files (e.g. `pip install foo=0.2.36`)
+=*
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store

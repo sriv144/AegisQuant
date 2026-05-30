@@ -1,5 +1,10 @@
 # AegisQuant
 
+[![CI](https://github.com/sriv144/AegisQuant/actions/workflows/ci.yml/badge.svg)](https://github.com/sriv144/AegisQuant/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Code style: ruff](https://img.shields.io/badge/lint-ruff-46aef7)](https://docs.astral.sh/ruff/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 AegisQuant is a production-grade, multi-asset algorithmic trading pipeline utilizing Reinforcement Learning (PPO/SAC) combined with Large Language Model consensus scoring to actively generate systematic alpha.
 
 The system structurally bridges the gap between pure ML research and financial deployment by embedding institutional risk-management techniques (Continuous Feature Normalization, Gaussian HMM Regime Detection, SHAP Agent Attribution, Drawdown Circuit Breakers, and Implementation Shortfall tracking).
@@ -65,6 +70,11 @@ The codebase is mapped heavily against `pytest`. Execute safety verifications be
 ```bash
 python -m pytest tests/
 ```
+
+## Contributing & Security
+
+- See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, branching, and PR guidelines.
+- See [`SECURITY.md`](SECURITY.md) before reporting a vulnerability.
 
 ## Authors
 _Built originally to merge Modern Portfolio Theory with Autonomous AI frameworks._
