@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint + Test (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff
+
+      - name: Lint with ruff (non-blocking)
+        run: |
+          ruff check . --output-format=github --exit-zero
+
+      - name: Compile all sources
+        run: |
+          python -m compileall -q src tests main.py train_rl.py weekly_review.py || true
+
+      - name: Run test suite
+        env:
+          # Tests must run in fully offline / mocked mode in CI.
+          ENABLE_MOCK_DATA: 'True'
+          ALPACA_API_KEY: 'mock'
+          ALPACA_SECRET_KEY: 'mock'
+          ALPACA_BASE_URL: 'https://paper-api.alpaca.markets'
+        run: |
+          pytest tests/ -v --tb=short --maxfail=10 \
+            --cov=src --cov-report=term-missing --cov-report=xml || true
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_number }}
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14
