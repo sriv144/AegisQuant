@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    name: Syntax + import smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Compile-check all sources
+        run: |
+          python -m compileall -q src tests || true
+          # Re-run without -q so any genuine SyntaxError surfaces in logs
+          python -m compileall src tests
+
+      - name: Quick lint (flake8 syntax + undefined names only)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install flake8
+          # E9: runtime, F63/F7/F82: undefined names / syntax-ish issues.
+          # We deliberately don't enforce style here; trade.yml handles the
+          # heavy runtime install separately.
+          python -m flake8 src --count --select=E9,F63,F7,F82 --show-source --statistics
