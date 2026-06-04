@@ -8,3 +8,7 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Guard against accidental 'pip install <pkg> =1.2.3' style commits, which
+# write empty marker files named '=1.2.3' at the repo root.
+/=*
