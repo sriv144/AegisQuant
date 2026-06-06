@@ -150,6 +150,7 @@ def market_config():
         "timezone": "America/New_York" if MARKET == "US" else "Asia/Kolkata",
         "benchmark_label": BENCHMARK_LABEL,
         "default_capital": DEFAULT_CAPITAL,
+        "kill_switch": os.getenv("KILL_SWITCH", "false").lower() in ("true", "1", "yes"),
     }
 
 
@@ -227,20 +228,25 @@ def _build_live_snapshot() -> dict:
                 "SELECT timestamp, circuit_breaker_status FROM decisions ORDER BY id DESC LIMIT 1"
             )).fetchone()
 
-        # Use DB values if they're non-placeholder; otherwise fall back to live Alpaca
+        # Use DB values if they're real pipeline output; otherwise fall back to live Alpaca.
+        # A row is a placeholder if: missing, exactly at default capital, or far outside
+        # the expected range for this market (e.g. India ₹250K rows in a US $100K account).
+        db_pv = float(pv_row[1]) if pv_row else None
         db_is_placeholder = (
-            not pv_row
-            or float(pv_row[1]) == DEFAULT_CAPITAL
+            db_pv is None
+            or db_pv == DEFAULT_CAPITAL
+            or abs(db_pv - DEFAULT_CAPITAL) / DEFAULT_CAPITAL > 0.5
         )
-        if db_is_placeholder:
-            live = _alpaca_portfolio_live()
-            pv = live.get("current_value", DEFAULT_CAPITAL)
-            dd = live.get("drawdown", 0.0)
-            pnl = live.get("total_pnl", 0.0)
+        live = _alpaca_portfolio_live()
+        if db_is_placeholder or not live:
+            pv = live.get("current_value", DEFAULT_CAPITAL) if live else (db_pv or DEFAULT_CAPITAL)
+            dd = live.get("drawdown", 0.0) if live else (float(pv_row[2]) if pv_row else 0.0)
+            pnl = live.get("total_pnl", 0.0) if live else (float(pv_row[3]) if pv_row else 0.0)
         else:
-            pv = float(pv_row[1])
-            dd = float(pv_row[2])
-            pnl = float(pv_row[3])
+            # DB has real data — still prefer live Alpaca equity for freshness
+            pv = live.get("current_value", db_pv)
+            dd = live.get("drawdown", float(pv_row[2]))
+            pnl = live.get("total_pnl", float(pv_row[3]))
 
         # Open positions: prefer DB count; fall back to live Alpaca count
         open_count = pos_row[0] if pos_row and pos_row[0] > 0 else 0
@@ -425,31 +431,21 @@ def get_benchmark(_auth=Depends(require_auth)):
                 "SELECT MIN(date), MAX(date) FROM daily_pnl"
             )).fetchone()
 
-        # If DB is empty or has only placeholder rows, use last 35 days as default range
+        # Always show the last 90 days of benchmark so the chart is useful even when
+        # the DB only has a handful of stale rows. The end date is always today.
+        end = datetime.now().strftime("%Y-%m-%d")
         if not dates or not dates[0]:
-            end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=35)).strftime("%Y-%m-%d")
-            initial_pv = DEFAULT_CAPITAL
+            start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
         else:
-            start_date, end_date = dates
+            start_date, _ = dates
             try:
-                start = (datetime.fromisoformat(start_date) - timedelta(days=5)).strftime("%Y-%m-%d")
-                end = (datetime.fromisoformat(end_date) + timedelta(days=1)).strftime("%Y-%m-%d")
+                db_start = datetime.fromisoformat(start_date)
+                # Use whichever is earlier: DB start or 90 days ago
+                ninety_ago = datetime.now() - timedelta(days=90)
+                start = min(db_start, ninety_ago).strftime("%Y-%m-%d")
             except Exception:
-                start, end = start_date, end_date
-            with engine.connect() as conn:
-                init_row = conn.execute(text(
-                    "SELECT total_portfolio_value FROM daily_pnl ORDER BY date ASC LIMIT 1"
-                )).fetchone()
-            raw_initial = float(init_row[0]) if init_row else DEFAULT_CAPITAL
-            # If the stored value differs from DEFAULT_CAPITAL by >50%, the DB row is
-            # stale (old test run with different capital). Normalize to DEFAULT_CAPITAL
-            # so the benchmark chart aligns with the portfolio chart.
-            initial_pv = (
-                DEFAULT_CAPITAL
-                if abs(raw_initial - DEFAULT_CAPITAL) / max(DEFAULT_CAPITAL, 1) > 0.5
-                else raw_initial
-            )
+                start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        initial_pv = DEFAULT_CAPITAL
 
         bench_data = yf.download(BENCHMARK_SYMBOL, start=start, end=end, auto_adjust=True, progress=False)
         if bench_data.empty:
@@ -870,6 +866,68 @@ def get_circuits(_auth=Depends(require_auth)):
     except Exception as e:
         logger.error(f"get_circuits: {e}")
         return {"circuits": [], "total": 0, "error": str(e)}
+
+
+# ── Sleeves API (v2 architecture) ───────────────────────────────────────────
+@app.get("/api/sleeves")
+def get_sleeves(_auth=Depends(require_auth)):
+    """
+    Return the latest sleeve-based pipeline snapshot. Written by main_us_v2.py
+    on each cycle. Returns {"available": false} if v2 has never run.
+    """
+    try:
+        snap_path = Path(__file__).resolve().parents[2] / ".cache" / "sleeve_snapshots" / "latest.json"
+        if not snap_path.exists():
+            return {"available": False, "message": "v2 pipeline has not run yet. Execute: python main_us_v2.py"}
+        with open(snap_path) as f:
+            data = json.load(f)
+        data["available"] = True
+        return data
+    except Exception as e:
+        logger.error(f"get_sleeves: {e}")
+        return {"available": False, "error": str(e)}
+
+
+@app.get("/api/factors/snapshot")
+def get_factors_snapshot(_auth=Depends(require_auth)):
+    """
+    Compute live factor top-decile for the SP100 universe. Cached server-side
+    by the data provider so subsequent calls are fast.
+
+    For the dashboard's Factors tab — shows where each ticker ranks across
+    the 5 factor dimensions.
+    """
+    try:
+        from src.factors import (
+            ValueFactor, QualityFactor, MomentumFactor,
+            DefensiveFactor, TrendFactor, sp100_tickers,
+        )
+        universe = sp100_tickers()
+        out = {}
+        for name, factor_cls in [
+            ("value", ValueFactor),
+            ("quality", QualityFactor),
+            ("momentum", MomentumFactor),
+            ("defensive", DefensiveFactor),
+            ("trend", TrendFactor),
+        ]:
+            try:
+                res = factor_cls().compute(universe)
+                out[name] = {
+                    "top_10": [
+                        {"ticker": t, "score": round(res.scores[t], 3),
+                         "confidence": round(res.confidence.get(t, 1.0), 3)}
+                        for t in res.top_n(10)
+                    ],
+                    "n_scored": len(res.scores),
+                    "notes": res.notes,
+                }
+            except Exception as e:
+                out[name] = {"error": str(e), "top_10": []}
+        return {"available": True, "factors": out, "universe_size": len(universe)}
+    except Exception as e:
+        logger.error(f"get_factors_snapshot: {e}")
+        return {"available": False, "error": str(e)}
 
 
 # ── Static files & root ─────────────────────────────────────────────────────

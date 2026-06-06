@@ -1,7 +1,19 @@
 import json
+import os
 from typing import Dict, Any
 from ..base_agent import BaseAgent
 from ..state import AgentState
+
+
+def _kill_switch_active() -> bool:
+    """KILL_SWITCH=true halts all NEW entries (exits in position_manager still run).
+
+    Used during Phase 0 of the strategy redesign to stop digging the hole while
+    the new factor-based architecture is being built. Re-evaluated each call so
+    flipping the env var takes effect without restart.
+    """
+    return os.getenv("KILL_SWITCH", "false").lower() in ("true", "1", "yes")
+
 
 class ExecutionAgent(BaseAgent):
     def __init__(self):
@@ -59,6 +71,19 @@ class ExecutionAgent(BaseAgent):
 
     def invoke(self, state: AgentState) -> Dict[str, Any]:
         print(f"[{self.name}] Preparing execution strategy for {state['current_asset']}...")
+
+        # Phase 0 kill-switch: halt all new entries while the strategy redesign
+        # is in flight. position_manager still runs exits independently.
+        if _kill_switch_active():
+            print(f"[{self.name}] KILL_SWITCH=true — skipping new entry for {state['current_asset']}")
+            return {
+                "execution_result": {
+                    "agent_name": self.name,
+                    "action": "SKIP",
+                    "rationale": "KILL_SWITCH active — no new entries during strategy redesign.",
+                },
+                "trade_type": "SKIP",
+            }
 
         # Determine trade type first
         trade_type = self._determine_trade_type(state)

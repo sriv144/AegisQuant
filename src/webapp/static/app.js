@@ -115,6 +115,8 @@ function navigateTo(page) {
     if (page === 'journal') renderJournalPage();
     if (page === 'circuits') renderCircuitsPage();
     if (page === 'setup') renderSetupPage();
+    if (page === 'sleeves') renderSleevesPage();
+    if (page === 'factors') renderFactorsPage();
 }
 
 document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -127,7 +129,26 @@ window.addEventListener('keydown', (e) => {
     const pages = ['overview', 'trades', 'positions', 'journal', 'circuits', 'setup'];
     const idx = parseInt(e.key) - 1;
     if (idx >= 0 && idx < pages.length) navigateTo(pages[idx]);
+    // Extra shortcuts: S = sleeves, F = factors
+    if (e.key.toLowerCase() === 's' && !e.ctrlKey && !e.metaKey) navigateTo('sleeves');
+    if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey) navigateTo('factors');
 });
+
+// ---- Kill Switch Banner ----
+function renderKillSwitchBanner(active) {
+    let el = document.getElementById('kill-switch-banner');
+    if (!active) {
+        if (el) el.remove();
+        return;
+    }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'kill-switch-banner';
+        el.style.cssText = 'position:sticky;top:0;z-index:1000;background:#7a1a1a;color:#ffe9e9;padding:8px 16px;font-weight:600;font-size:13px;border-bottom:1px solid #c44;display:flex;justify-content:center;align-items:center;gap:8px;';
+        el.innerHTML = '🛑 <span>KILL_SWITCH ACTIVE — no new entries; exits still run. Strategy redesign in progress.</span>';
+        document.body.insertBefore(el, document.body.firstChild);
+    }
+}
 
 // ---- Clock & Market State ----
 function updateClock() {
@@ -225,25 +246,45 @@ function updateLiveKPIs(data) {
 // ---- Data Fetching ----
 async function fetchAll() {
     try {
-        const [portfolioRes, latestRunRes, decisionsRes, benchmarkRes] = await Promise.all([
+        const [portfolioRes, latestRunRes, decisionsRes, benchmarkRes, brokerPositionsRes] = await Promise.all([
             apiFetch('/api/portfolio').catch(() => ({})),
             apiFetch('/api/latest-run').catch(() => ({})),
             apiFetch('/api/decisions').catch(() => []),
             apiFetch('/api/benchmark').catch(() => ({ benchmark: [] })),
+            apiFetch('/api/positions/detailed').catch(() => []),
         ]);
 
-        allPositions = latestRunRes.positions || [];
+        // Prefer AI run positions; fall back to live broker positions when AI DB is empty
+        const aiPositions = latestRunRes.positions || [];
+        allPositions = aiPositions.length > 0 ? aiPositions : _brokerToPositions(brokerPositionsRes || []);
         allDecisions = Array.isArray(decisionsRes) ? decisionsRes : [];
 
-        updateOverviewKPIs(portfolioRes, latestRunRes);
+        updateOverviewKPIs(portfolioRes, latestRunRes, allPositions.length);
         renderPnlChart(portfolioRes.history || [], benchmarkRes.benchmark || []);
-        renderOverviewPositions(latestRunRes);
+        renderOverviewPositions(latestRunRes, allPositions);
         renderAgentStrip(latestRunRes);
         renderCircuitsMini();
     } catch {}
 }
 
-function updateOverviewKPIs(portfolio, run) {
+// Convert /api/positions/detailed broker rows into the positions shape used by the UI
+function _brokerToPositions(rows) {
+    return rows.map(p => ({
+        ticker: p.ticker,
+        direction: 'LONG',
+        weight_pct: 0,
+        capital: (p.entry_price || 0) * (p.quantity || 0),
+        last_price: p.current_price || p.entry_price || null,
+        est_shares: p.quantity || null,
+        days_held: p.days_held || 0,
+        pnl_pct: p.unrealized_pnl_pct || p.pnl_pct || null,
+        unrealized_pnl: p.unrealized_pnl || null,
+        reasoning: { committee: { strategy: p.strategy || 'live', reasoning: '' } },
+        _broker: true,
+    }));
+}
+
+function updateOverviewKPIs(portfolio, run, actualPosCount) {
     const val = portfolio.current_value || MARKET_CFG.default_capital;
     const pnl = portfolio.total_pnl || 0;
     const dailyPnl = portfolio.daily_pnl != null ? portfolio.daily_pnl : null;
@@ -267,10 +308,12 @@ function updateOverviewKPIs(portfolio, run) {
     document.getElementById('ov-drawdown').textContent = dd.toFixed(2) + '%';
     document.getElementById('status-dd').textContent = dd.toFixed(1) + '%';
 
-    const posCount = (s.long_count || 0) + (s.short_count || 0);
+    // Use actual position count (includes live broker positions if AI run is empty)
+    const aiPosCount = (s.long_count || 0) + (s.short_count || 0);
+    const posCount = actualPosCount != null ? actualPosCount : aiPosCount;
     document.getElementById('ov-positions').textContent = posCount || '0';
     document.getElementById('ov-pos-detail').textContent =
-        posCount ? `${s.long_count || 0} long | Gross: ${s.gross_exposure_pct || 0}%` : 'No positions yet';
+        posCount ? `${posCount} open | Broker: Alpaca` : 'No positions yet';
 
     if (run.timestamp) {
         document.getElementById('run-ts').textContent = fmtTime(run.timestamp);
@@ -399,21 +442,36 @@ function renderAgentStrip(run) {
 }
 
 // ---- Overview Positions Table ----
-function renderOverviewPositions(run) {
+function renderOverviewPositions(run, fallbackPositions) {
     const body = document.getElementById('ov-positions-body');
-    const positions = run.positions || [];
+    const aiPositions = run.positions || [];
+    const positions = aiPositions.length > 0 ? aiPositions : (fallbackPositions || []);
 
     if (positions.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" class="empty">No positions in latest run</td></tr>';
+        body.innerHTML = '<tr><td colspan="6" class="empty">No open positions</td></tr>';
         return;
     }
 
     body.innerHTML = positions.slice(0, 15).map(p => {
         const r = p.reasoning || {};
         const strategy = r.committee?.strategy || r.strategy || r.strategy_used || '--';
+        const isBroker = p._broker;
+
+        if (isBroker) {
+            const pnlPct = p.pnl_pct != null ? (p.pnl_pct >= 0 ? '+' : '') + p.pnl_pct.toFixed(2) + '%' : '--';
+            const pnlClass = p.pnl_pct > 0 ? 'up' : p.pnl_pct < 0 ? 'down' : '';
+            return `<tr>
+                <td class="bright" style="font-weight:500">${p.ticker}</td>
+                <td><span class="chip up">LONG</span></td>
+                <td class="r mono dim">--</td>
+                <td class="r mono">${fmt(p.capital)}</td>
+                <td class="mono dim">live broker</td>
+                <td class="muted ${pnlClass}" style="font-size:11.5px">${pnlPct} unrealized | ${p.days_held || 0}d held</td>
+            </tr>`;
+        }
+
         const reasoning = r.committee?.reasoning || r.reasoning || r.analyst_reasoning || '--';
         const reasonShort = typeof reasoning === 'string' ? reasoning.slice(0, 80) : '--';
-
         return `<tr>
             <td class="bright" style="font-weight:500">${p.ticker}</td>
             <td><span class="chip ${p.direction === 'LONG' ? 'up' : 'down'}">${p.direction}</span></td>
@@ -620,11 +678,12 @@ function renderPositionsPage() {
 
     if (allPositions.length === 0) {
         summary.innerHTML = '';
-        body.innerHTML = '<tr><td colspan="8" class="empty">No positions in latest run</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="empty">No open positions</td></tr>';
         subtitle.textContent = 'no positions';
         return;
     }
 
+    const isBrokerMode = allPositions.every(p => p._broker);
     const totalCapital = allPositions.reduce((s, p) => s + (p.capital || 0), 0);
     const longCount = allPositions.filter(p => p.direction === 'LONG').length;
     const shortCount = allPositions.filter(p => p.direction === 'SHORT').length;
@@ -653,23 +712,25 @@ function renderPositionsPage() {
         </div>
     `;
 
-    subtitle.textContent = `${allPositions.length} positions | paper mode`;
+    subtitle.textContent = `${allPositions.length} positions | ${isBrokerMode ? 'live broker' : 'paper mode'}`;
 
     body.innerHTML = allPositions.map(p => {
         const r = p.reasoning || {};
-        const strategy = r.committee?.strategy || r.strategy || r.strategy_used || '--';
-        const thesis = r.committee?.reasoning || r.reasoning || r.analyst_reasoning || '--';
+        const strategy = r.committee?.strategy || r.strategy || r.strategy_used || (isBrokerMode ? 'alpaca_live' : '--');
+        const thesis = r.committee?.reasoning || r.reasoning || r.analyst_reasoning || '';
         const thesisShort = typeof thesis === 'string' ? thesis.slice(0, 60) : '--';
+        const pnlPct = p.pnl_pct != null ? (p.pnl_pct >= 0 ? '+' : '') + Number(p.pnl_pct).toFixed(2) + '%' : '--';
+        const pnlClass = p.pnl_pct > 0 ? 'up' : p.pnl_pct < 0 ? 'down' : '';
 
         return `<tr>
             <td class="bright" style="font-weight:500">${p.ticker}</td>
             <td><span class="chip ${p.direction === 'LONG' ? 'up' : 'down'}">${p.direction}</span></td>
-            <td class="r mono">${p.weight_pct.toFixed(1)}%</td>
+            <td class="r mono">${p.weight_pct ? p.weight_pct.toFixed(1) + '%' : '--'}</td>
             <td class="r mono">${fmt(p.capital)}</td>
-            <td class="r mono">${p.last_price ? '$' + p.last_price.toFixed(2) : '--'}</td>
-            <td class="r mono">${p.est_shares || '--'}</td>
+            <td class="r mono">${p.last_price ? '$' + Number(p.last_price).toFixed(2) : '--'}</td>
+            <td class="r mono ${pnlClass}">${pnlPct}</td>
             <td class="mono dim">${strategy}</td>
-            <td class="muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${thesisShort}</td>
+            <td class="muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${thesisShort || (p.days_held != null ? p.days_held + 'd held' : '--')}</td>
         </tr>`;
     }).join('');
 
@@ -848,6 +909,189 @@ function selectCircuit(idx) {
 }
 window.selectCircuit = selectCircuit;
 
+// ---- SLEEVES PAGE (v2 architecture) ----
+async function renderSleevesPage() {
+    const statusEl = document.getElementById('sleeves-pipeline-status');
+    const cycleEl = document.getElementById('sleeves-cycle-time');
+    const overviewEl = document.getElementById('sleeves-overview');
+    const macroEl = document.getElementById('sleeves-macro');
+    const macroChip = document.getElementById('sleeves-macro-chip');
+    const sleevesEl = document.getElementById('sleeves-sleeves');
+    const riskEl = document.getElementById('sleeves-risk');
+    const violationsEl = document.getElementById('sleeves-violations');
+
+    statusEl.textContent = 'Loading...';
+    let data;
+    try {
+        data = await apiFetch('/api/sleeves');
+    } catch (e) {
+        statusEl.textContent = 'API error: ' + e.message;
+        return;
+    }
+
+    if (!data.available) {
+        statusEl.textContent = data.message || 'v2 pipeline has not run yet.';
+        cycleEl.textContent = '--';
+        overviewEl.innerHTML = '<div class="muted" style="font-size:12px;padding:8px">Run <code>python main_us_v2.py</code> to populate this page.</div>';
+        macroEl.innerHTML = '<div class="muted">No data</div>';
+        sleevesEl.innerHTML = '<div class="muted" style="padding:14px;font-size:12px">No data</div>';
+        riskEl.innerHTML = '<div class="muted" style="padding:14px;font-size:12px">No data</div>';
+        return;
+    }
+
+    statusEl.textContent = `Pipeline: ${data.kill_switch ? 'KILL_SWITCH active (dry-run only)' : 'live'} | Sleeves: ${data.enabled_sleeves.join(', ')}`;
+    cycleEl.textContent = new Date(data.cycle_at).toLocaleString();
+
+    // Overview KPIs
+    const sleeveW = data.combiner?.sleeve_weights || {};
+    const approved = data.risk_officer?.approved_weights || {};
+    const totalInvested = Object.values(approved).reduce((s, w) => s + w, 0);
+    const nViolations = (data.risk_officer?.violations || []).length;
+    overviewEl.innerHTML = `
+        <div class="kpi-card"><div class="kpi-label">Active sleeves</div><div class="kpi-val bright">${Object.keys(sleeveW).length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Positions</div><div class="kpi-val bright">${Object.keys(approved).length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">Total invested</div><div class="kpi-val bright">${(totalInvested * 100).toFixed(1)}%</div></div>
+        <div class="kpi-card"><div class="kpi-label">Cash</div><div class="kpi-val bright">${((data.combiner?.cash_weight || 0) * 100).toFixed(1)}%</div></div>
+        <div class="kpi-card"><div class="kpi-label">Risk violations</div><div class="kpi-val ${nViolations > 0 ? 'warn' : 'bright'}">${nViolations}</div></div>
+        <div class="kpi-card"><div class="kpi-label">DD scaling</div><div class="kpi-val bright">${(data.risk_officer?.drawdown_scaling || 1.0).toFixed(2)}x</div></div>
+    `;
+
+    // Macro
+    const macro = data.macro_regime || {};
+    const ms = macro.score || 0;
+    const macroClass = ms > 0.5 ? 'up' : ms < -0.5 ? 'down' : 'dim';
+    macroChip.textContent = `${ms >= 0 ? '+' : ''}${ms.toFixed(2)} / 3.00`;
+    macroChip.className = 'chip ' + (ms > 0.5 ? 'mint-chip' : ms < -0.5 ? 'red-chip' : '');
+    macroEl.innerHTML = `
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+            <div>
+                <div class="kpi-label">Regime score</div>
+                <div class="kpi-val ${macroClass}" style="font-size:28px">${ms >= 0 ? '+' : ''}${ms.toFixed(2)}</div>
+                <div class="muted mono" style="font-size:11px">confidence ${(macro.confidence || 0).toFixed(2)}</div>
+            </div>
+            <div style="flex:1;min-width:300px">
+                <div class="kpi-label">Components</div>
+                <div class="mono" style="font-size:12px;line-height:1.6">${macro.rationale || 'No data'}</div>
+            </div>
+        </div>
+    `;
+
+    // Sleeves table
+    let sleevesHtml = '<table style="width:100%;font-size:12.5px"><thead><tr>'
+        + '<th style="text-align:left;padding:8px 12px">Sleeve</th>'
+        + '<th style="text-align:right;padding:8px 12px">Sleeve weight</th>'
+        + '<th style="text-align:right;padding:8px 12px">Positions</th>'
+        + '<th style="text-align:left;padding:8px 12px">Top picks</th>'
+        + '</tr></thead><tbody>';
+    for (const [name, w] of Object.entries(sleeveW)) {
+        const sr = data.sleeve_results?.[name];
+        const topPicks = sr ? Object.entries(sr.weights).sort((a, b) => b[1] - a[1]).slice(0, 5)
+            .map(([t, ww]) => `<span class="chip" style="margin-right:4px">${t} ${(ww * 100).toFixed(1)}%</span>`).join('') : '--';
+        sleevesHtml += `<tr>
+            <td style="padding:8px 12px"><b>${name}</b></td>
+            <td style="padding:8px 12px;text-align:right" class="mono">${(w * 100).toFixed(1)}%</td>
+            <td style="padding:8px 12px;text-align:right" class="mono">${sr?.n_positions || 0}</td>
+            <td style="padding:8px 12px">${topPicks}</td>
+        </tr>`;
+    }
+    sleevesHtml += '</tbody></table>';
+    sleevesEl.innerHTML = sleevesHtml;
+
+    // Risk officer review
+    violationsEl.textContent = `${nViolations} violation${nViolations !== 1 ? 's' : ''}`;
+    violationsEl.className = 'chip ' + (nViolations > 0 ? 'red-chip' : 'mint-chip');
+    let riskHtml = '<div style="padding:8px 12px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.04)">Approved positions (top 15)</div>';
+    riskHtml += '<table style="width:100%;font-size:12.5px"><thead><tr>'
+        + '<th style="text-align:left;padding:8px 12px">Ticker</th>'
+        + '<th style="text-align:right;padding:8px 12px">Weight</th>'
+        + '<th style="text-align:right;padding:8px 12px">$ Capital</th>'
+        + '</tr></thead><tbody>';
+    const sorted = Object.entries(approved).sort((a, b) => b[1] - a[1]).slice(0, 15);
+    const cap = MARKET_CFG.default_capital || 100000;
+    for (const [t, w] of sorted) {
+        riskHtml += `<tr>
+            <td style="padding:6px 12px"><b>${t}</b></td>
+            <td style="padding:6px 12px;text-align:right" class="mono">${(w * 100).toFixed(2)}%</td>
+            <td style="padding:6px 12px;text-align:right" class="mono">${MARKET_CFG.currency_symbol}${(w * cap).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+        </tr>`;
+    }
+    riskHtml += '</tbody></table>';
+    if (nViolations > 0) {
+        riskHtml += '<div style="padding:8px 12px;font-size:12px;font-weight:600;background:rgba(255,100,100,0.06);border-top:1px solid rgba(255,255,255,0.05);margin-top:8px">Constraint violations</div>';
+        riskHtml += '<ul style="padding:8px 32px;font-size:12px;font-family:monospace;line-height:1.6">';
+        for (const v of (data.risk_officer.violations || [])) {
+            riskHtml += `<li>${v}</li>`;
+        }
+        riskHtml += '</ul>';
+    }
+    riskEl.innerHTML = riskHtml;
+}
+
+// ---- FACTORS PAGE ----
+async function renderFactorsPage() {
+    const grid = document.getElementById('factors-grid');
+    const refreshBtn = document.getElementById('factors-refresh-btn');
+    grid.innerHTML = '<div class="muted" style="padding:14px;font-size:12px">Loading factor scores...</div>';
+
+    let data;
+    try {
+        data = await apiFetch('/api/factors/snapshot');
+    } catch (e) {
+        grid.innerHTML = `<div class="muted" style="padding:14px">API error: ${e.message}</div>`;
+        return;
+    }
+
+    if (!data.available) {
+        grid.innerHTML = `<div class="muted" style="padding:14px">Error: ${data.error || 'unknown'}</div>`;
+        return;
+    }
+
+    grid.innerHTML = '';
+    const factorDescriptions = {
+        value: 'P/E + P/B + EV/EBITDA + FCF yield (Asness)',
+        quality: 'ROE + margins + safety + growth (QMJ)',
+        momentum: '12-1m return + Gray smoothness',
+        defensive: '-Beta vs SPY (BAB)',
+        trend: 'EWMAC fast/mid/slow (Carver)',
+    };
+    for (const [name, f] of Object.entries(data.factors)) {
+        const desc = factorDescriptions[name] || '';
+        let panel = `<div class="panel">
+            <div class="panel-h">
+                <div>
+                    <div class="title">${name.toUpperCase()}</div>
+                    <div class="kicker" style="margin-top:4px">${desc}</div>
+                </div>
+                <span class="chip mint-chip">${f.n_scored || 0}</span>
+            </div>
+            <div class="panel-b flush">`;
+        if (f.error) {
+            panel += `<div class="muted" style="padding:14px;font-size:12px">Error: ${f.error}</div>`;
+        } else {
+            panel += '<table style="width:100%;font-size:12.5px"><thead><tr>'
+                + '<th style="text-align:left;padding:8px 12px">Rank</th>'
+                + '<th style="text-align:left;padding:8px 12px">Ticker</th>'
+                + '<th style="text-align:right;padding:8px 12px">Z-score</th>'
+                + '<th style="text-align:right;padding:8px 12px">Conf</th>'
+                + '</tr></thead><tbody>';
+            (f.top_10 || []).forEach((p, i) => {
+                const scoreClass = p.score > 0 ? 'up' : 'down';
+                panel += `<tr>
+                    <td style="padding:6px 12px" class="mono">#${i + 1}</td>
+                    <td style="padding:6px 12px"><b>${p.ticker}</b></td>
+                    <td style="padding:6px 12px;text-align:right" class="mono ${scoreClass}">${p.score >= 0 ? '+' : ''}${p.score.toFixed(2)}</td>
+                    <td style="padding:6px 12px;text-align:right" class="mono dim">${(p.confidence * 100).toFixed(0)}%</td>
+                </tr>`;
+            });
+            panel += '</tbody></table>';
+        }
+        panel += '</div></div>';
+        grid.innerHTML += panel;
+    }
+
+    refreshBtn.onclick = () => renderFactorsPage();
+}
+
 // ---- ALPACA SETUP PAGE ----
 function renderSetupPage() {
     const statusEl = document.getElementById('setup-status');
@@ -969,6 +1213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         MARKET_CFG = { ...MARKET_CFG, ...cfg };
         document.getElementById('bench-label').textContent = MARKET_CFG.benchmark_label;
         document.title = `AegisQuant Terminal (${MARKET_CFG.market})`;
+        renderKillSwitchBanner(MARKET_CFG.kill_switch === true);
     } catch {}
 
     await checkAuth();

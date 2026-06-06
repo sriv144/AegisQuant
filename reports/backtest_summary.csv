@@ -1,0 +1,4 @@
+sleeve,start,end,n_rebalances,annualized_return_pct,annualized_vol_pct,sharpe,max_drawdown_pct,calmar,turnover_annual_x,deflated_sharpe,pit_warning
+value_quality_momentum,2024-01-02,2026-05-22,29,23.24,16.62,1.399,-16.13,1.441,2.11,0.981,True
+xs_momentum,2024-01-02,2026-05-22,29,27.71,16.75,1.655,-18.5,1.498,2.2,0.991,False
+pead,2024-01-02,2026-05-22,125,50.52,22.62,2.234,-25.85,1.954,19.47,0.999,True
