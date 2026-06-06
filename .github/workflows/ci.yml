@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      PYTHONPATH: .
       MARKET: US
       BROKER: paper
       INITIAL_CAPITAL: "100000"
