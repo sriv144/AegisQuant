@@ -67,8 +67,23 @@ class RiskOfficer:
     BETA_MAX = 1.0
     ENFORCE_BETA = False  # turn on after backtest validation
 
-    def __init__(self, data_provider=None):
+    def __init__(
+        self,
+        data_provider=None,
+        max_position_nav: Optional[float] = None,
+        max_sector_nav: Optional[float] = None,
+        max_sleeve_nav: Optional[float] = None,
+        beta_min: Optional[float] = None,
+        beta_max: Optional[float] = None,
+        enforce_beta: Optional[bool] = None,
+    ):
         self.dp = data_provider or get_data_provider()
+        self.max_position_nav = float(max_position_nav if max_position_nav is not None else self.MAX_POSITION_NAV)
+        self.max_sector_nav = float(max_sector_nav if max_sector_nav is not None else self.MAX_SECTOR_NAV)
+        self.max_sleeve_nav = float(max_sleeve_nav if max_sleeve_nav is not None else self.MAX_SLEEVE_NAV)
+        self.beta_min = float(beta_min if beta_min is not None else self.BETA_MIN)
+        self.beta_max = float(beta_max if beta_max is not None else self.BETA_MAX)
+        self.enforce_beta = self.ENFORCE_BETA if enforce_beta is None else bool(enforce_beta)
 
     def review(
         self,
@@ -106,8 +121,8 @@ class RiskOfficer:
 
         # 2) Sleeve cap (sanity — combiner should have enforced)
         for k, w in target.sleeve_weights.items():
-            if w > self.MAX_SLEEVE_NAV + 1e-6:
-                violations.append(f"Sleeve cap violated: {k} at {w:.3f} > {self.MAX_SLEEVE_NAV}")
+            if w > self.max_sleeve_nav + 1e-6:
+                violations.append(f"Sleeve cap violated: {k} at {w:.3f} > {self.max_sleeve_nav}")
 
         # 3) Single-position cap
         weights, pos_violations = self._enforce_position_cap(weights)
@@ -120,14 +135,19 @@ class RiskOfficer:
         # 5) Beta check (informational unless enforce on)
         beta_est = self._estimate_portfolio_beta(weights)
         if beta_est is not None:
-            if beta_est < self.BETA_MIN or beta_est > self.BETA_MAX:
-                msg = (f"Portfolio beta {beta_est:.2f} outside [{self.BETA_MIN}, {self.BETA_MAX}]")
+            if beta_est < self.beta_min or beta_est > self.beta_max:
+                msg = (f"Portfolio beta {beta_est:.2f} outside [{self.beta_min}, {self.beta_max}]")
                 violations.append(msg)
-                if self.ENFORCE_BETA:
-                    # Scale down all positions equally to drag beta toward range center
-                    target_beta = (self.BETA_MIN + self.BETA_MAX) / 2
-                    scale = target_beta / max(0.05, beta_est)
+                if self.enforce_beta and beta_est > self.beta_max:
+                    # Only scale down excessive beta. Low beta is defensive/cash,
+                    # not a reason to increase gross exposure.
+                    scale = self.beta_max / max(0.05, beta_est)
                     weights = {t: w * scale for t, w in weights.items()}
+                    violations.append(
+                        f"Beta cap: beta={beta_est:.2f} > {self.beta_max:.2f} -> "
+                        f"scaling positions by {scale:.3f}"
+                    )
+                    beta_est = self._estimate_portfolio_beta(weights)
 
         beta_str = f"{beta_est:.2f}" if beta_est is not None else "NA"
         rationale = (
@@ -154,12 +174,12 @@ class RiskOfficer:
         out = {}
         violations = []
         for t, w in weights.items():
-            if w > self.MAX_POSITION_NAV + 1e-9:
+            if w > self.max_position_nav + 1e-9:
                 violations.append(
-                    f"Position cap: {t} at {w*100:.2f}% > {self.MAX_POSITION_NAV*100:.0f}% -> "
-                    f"capped to {self.MAX_POSITION_NAV*100:.0f}%"
+                    f"Position cap: {t} at {w*100:.2f}% > {self.max_position_nav*100:.0f}% -> "
+                    f"capped to {self.max_position_nav*100:.0f}%"
                 )
-                out[t] = self.MAX_POSITION_NAV
+                out[t] = self.max_position_nav
             else:
                 out[t] = w
         return out, violations
@@ -179,10 +199,10 @@ class RiskOfficer:
         out = dict(weights)
         for sec, members in sectors.items():
             total = sum(w for _, w in members)
-            if total > self.MAX_SECTOR_NAV + 1e-9:
-                scale = self.MAX_SECTOR_NAV / total
+            if total > self.max_sector_nav + 1e-9:
+                scale = self.max_sector_nav / total
                 violations.append(
-                    f"Sector cap: {sec} at {total*100:.1f}% > {self.MAX_SECTOR_NAV*100:.0f}% -> "
+                    f"Sector cap: {sec} at {total*100:.1f}% > {self.max_sector_nav*100:.0f}% -> "
                     f"scaling {len(members)} positions by {scale:.3f}"
                 )
                 for t, _ in members:

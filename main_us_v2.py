@@ -35,9 +35,10 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 try:
     from dotenv import load_dotenv
@@ -63,12 +64,45 @@ from src.factors.universe import sp100_tickers, sp500_tickers
 
 logger = logging.getLogger(__name__)
 
-KILL_SWITCH = os.getenv("KILL_SWITCH", "false").lower() in ("true", "1", "yes")
+NY_TZ = ZoneInfo("America/New_York")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "y", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %.4f", name, raw, default)
+        return default
+
+
+KILL_SWITCH = _env_bool("KILL_SWITCH", False)
 ENABLED_SLEEVES = [
-    s.strip() for s in os.getenv("ENABLED_SLEEVES", "xs_momentum").split(",") if s.strip()
+    s.strip()
+    for s in os.getenv("ENABLED_SLEEVES", "xs_momentum,value_quality_momentum").split(",")
+    if s.strip()
 ]
 UNIVERSE_NAME = os.getenv("UNIVERSE", "sp100").lower()
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "100000"))
+V2_MAX_TOTAL_INVESTED = _env_float("V2_MAX_TOTAL_INVESTED", 0.65)
+V2_MAX_SLEEVE_NAV = _env_float("V2_MAX_SLEEVE_NAV", 0.325)
+V2_MAX_POSITION_NAV = _env_float("V2_MAX_POSITION_NAV", 0.05)
+V2_MAX_SECTOR_NAV = _env_float("V2_MAX_SECTOR_NAV", 0.20)
+V2_BETA_MIN = _env_float("V2_BETA_MIN", 0.0)
+V2_BETA_MAX = _env_float("V2_BETA_MAX", 1.0)
+V2_ENFORCE_BETA = _env_bool("V2_ENFORCE_BETA", True)
+V2_MIN_TRADE_NAV_PCT = _env_float("V2_MIN_TRADE_NAV_PCT", 0.005)
+V2_LIVE_START_DATE = os.getenv("V2_LIVE_START_DATE", "2026-06-08")
+V2_REQUIRE_PRETRADE_REVIEW = _env_bool("V2_REQUIRE_PRETRADE_REVIEW", False)
 
 ALL_SLEEVE_FACTORY = {
     "value_quality_momentum": ValueQualityMomentumSleeve,
@@ -96,6 +130,32 @@ def _write_snapshot(payload: dict):
         logger.error(f"Snapshot write failed: {e}")
 
 
+def _live_start_reached(now_utc: Optional[datetime] = None) -> bool:
+    """True once the configured New York trading date is reached."""
+    if not V2_LIVE_START_DATE:
+        return True
+    try:
+        start = date.fromisoformat(V2_LIVE_START_DATE)
+    except ValueError:
+        logger.warning("Invalid V2_LIVE_START_DATE=%r; live start gate disabled", V2_LIVE_START_DATE)
+        return True
+    now_utc = now_utc or datetime.now(timezone.utc)
+    return now_utc.astimezone(NY_TZ).date() >= start
+
+
+def _resolve_dry_run(requested_dry_run: Optional[bool], now_utc: Optional[datetime] = None) -> tuple[bool, str]:
+    """Apply kill switch, live-start, and pre-trade review guards."""
+    if requested_dry_run is True:
+        return True, "requested"
+    if KILL_SWITCH:
+        return True, "KILL_SWITCH"
+    if not _live_start_reached(now_utc):
+        return True, f"before V2_LIVE_START_DATE={V2_LIVE_START_DATE}"
+    if V2_REQUIRE_PRETRADE_REVIEW:
+        return True, "V2_REQUIRE_PRETRADE_REVIEW"
+    return False, "live_enabled"
+
+
 # ── Core cycle ──────────────────────────────────────────────────────────────
 
 
@@ -104,14 +164,17 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
     Run one complete cycle: sleeves -> combiner -> risk officer -> (execute or log).
     Returns a dict suitable for JSON serialization.
     """
-    if dry_run is None:
-        dry_run = KILL_SWITCH
-
     cycle_start = datetime.now(timezone.utc)
+    dry_run, dry_run_reason = _resolve_dry_run(dry_run, cycle_start)
     print(f"\n=== AegisQuant v2 cycle @ {cycle_start.isoformat()} ===")
-    print(f"  KILL_SWITCH={KILL_SWITCH}  dry_run={dry_run}")
+    print(f"  KILL_SWITCH={KILL_SWITCH}  dry_run={dry_run} ({dry_run_reason})")
     print(f"  Enabled sleeves: {ENABLED_SLEEVES}")
-    print(f"  Universe: {UNIVERSE_NAME}  Capital: ${INITIAL_CAPITAL:,.0f}")
+    print(f"  Universe: {UNIVERSE_NAME}  Initial capital: ${INITIAL_CAPITAL:,.0f}")
+    print(
+        f"  Rollout caps: max_total={V2_MAX_TOTAL_INVESTED:.1%} "
+        f"max_sleeve={V2_MAX_SLEEVE_NAV:.1%} max_position={V2_MAX_POSITION_NAV:.1%} "
+        f"max_sector={V2_MAX_SECTOR_NAV:.1%} beta_cap={V2_BETA_MAX:.2f}"
+    )
 
     universe_fn = {"sp100": sp100_tickers, "sp500": sp500_tickers}[UNIVERSE_NAME]
 
@@ -142,7 +205,10 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
     print(f"  Macro regime: {macro.score:+.2f} (conf {macro.confidence:.2f}) — {macro.rationale}")
 
     # 3) Combiner
-    combiner = Combiner()
+    combiner = Combiner(
+        max_sleeve_nav=V2_MAX_SLEEVE_NAV,
+        max_total_invested=V2_MAX_TOTAL_INVESTED,
+    )
     target = combiner.combine(
         sleeve_results,
         macro_regime_score=macro.score,
@@ -152,8 +218,17 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
           f"n_positions={target.n_positions}, cash={target.cash_weight:.1%}")
 
     # 4) RiskOfficer
-    officer = RiskOfficer()
-    current_dd = _current_drawdown_from_alpaca()
+    account_state = _alpaca_account_state()
+    nav = float(account_state.get("equity") or INITIAL_CAPITAL)
+    current_dd = float(account_state.get("drawdown") or 0.0)
+    officer = RiskOfficer(
+        max_position_nav=V2_MAX_POSITION_NAV,
+        max_sector_nav=V2_MAX_SECTOR_NAV,
+        max_sleeve_nav=V2_MAX_SLEEVE_NAV,
+        beta_min=V2_BETA_MIN,
+        beta_max=V2_BETA_MAX,
+        enforce_beta=V2_ENFORCE_BETA,
+    )
     review = officer.review(target, current_drawdown=current_dd)
     print(f"  RiskOfficer: {len(review.approved_weights)} approved positions, "
           f"{len(review.violations)} violations, dd_scale={review.drawdown_scaling}")
@@ -166,22 +241,38 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
     if review.approved_weights:
         print("  Top 10 approved positions:")
         for t, w in sorted(review.approved_weights.items(), key=lambda kv: -kv[1])[:10]:
-            print(f"    {t}: {w*100:.2f}%  (${w * INITIAL_CAPITAL:,.0f})")
+            print(f"    {t}: {w*100:.2f}%  (${w * nav:,.0f})")
 
     # 6) Execute or dry-run
+    planned_deltas = _build_delta_orders(review.approved_weights, nav)
+    _print_delta_preview(planned_deltas)
     if dry_run:
-        print(f"  [DRY RUN] KILL_SWITCH active — no trades sent.")
-        deltas = []
+        print(f"  [DRY RUN] {dry_run_reason} - no trades sent.")
+        deltas = planned_deltas
     else:
-        deltas = _execute_deltas(review.approved_weights, INITIAL_CAPITAL)
+        deltas = _submit_delta_orders(planned_deltas)
         print(f"  Executed {len(deltas)} delta orders.")
 
     # 7) Persist snapshot for dashboard
     payload = {
         "cycle_at": cycle_start.isoformat(),
         "dry_run": dry_run,
+        "dry_run_reason": dry_run_reason,
         "kill_switch": KILL_SWITCH,
         "enabled_sleeves": ENABLED_SLEEVES,
+        "nav_used": nav,
+        "account_state": account_state,
+        "risk_limits": {
+            "max_total_invested": V2_MAX_TOTAL_INVESTED,
+            "max_sleeve_nav": V2_MAX_SLEEVE_NAV,
+            "max_position_nav": V2_MAX_POSITION_NAV,
+            "max_sector_nav": V2_MAX_SECTOR_NAV,
+            "beta_min": V2_BETA_MIN,
+            "beta_max": V2_BETA_MAX,
+            "enforce_beta": V2_ENFORCE_BETA,
+            "min_trade_nav_pct": V2_MIN_TRADE_NAV_PCT,
+            "live_start_date": V2_LIVE_START_DATE,
+        },
         "macro_regime": {
             "score": macro.score, "confidence": macro.confidence,
             "rationale": macro.rationale, "metadata": macro.metadata,
@@ -212,6 +303,190 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
 
 
 # ── Alpaca integration (read DD, execute) ───────────────────────────────────
+
+
+def _alpaca_config() -> tuple[str, dict]:
+    api_key = os.getenv("ALPACA_API_KEY")
+    secret = os.getenv("ALPACA_SECRET_KEY")
+    base = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
+    headers = {}
+    if api_key and secret:
+        headers = {"APCA-API-KEY-ID": api_key, "APCA-API-SECRET-KEY": secret}
+    return base, headers
+
+
+def _alpaca_account_state() -> dict:
+    """Fetch live equity and peak-to-trough drawdown from Alpaca when available."""
+    try:
+        import requests
+        base, headers = _alpaca_config()
+        if not headers:
+            return {"equity": INITIAL_CAPITAL, "drawdown": 0.0, "source": "initial_capital"}
+
+        acct_resp = requests.get(f"{base}/v2/account", headers=headers, timeout=10)
+        if acct_resp.status_code != 200:
+            logger.warning("Alpaca account fetch failed: %s", acct_resp.status_code)
+            return {"equity": INITIAL_CAPITAL, "drawdown": 0.0, "source": "initial_capital"}
+        acct = acct_resp.json()
+        equity = float(acct.get("equity") or acct.get("portfolio_value") or INITIAL_CAPITAL)
+        last_equity = float(acct.get("last_equity") or equity)
+
+        peak_equity = max(INITIAL_CAPITAL, equity, last_equity)
+        try:
+            hist_resp = requests.get(
+                f"{base}/v2/account/portfolio/history",
+                headers=headers,
+                params={"period": "1M", "timeframe": "1D", "extended_hours": "false"},
+                timeout=10,
+            )
+            if hist_resp.status_code == 200:
+                hist = hist_resp.json()
+                equities = [
+                    float(x) for x in hist.get("equity", [])
+                    if x is not None and float(x) > 0
+                ]
+                if equities:
+                    peak_equity = max(peak_equity, max(equities))
+        except Exception as e:
+            logger.warning("Alpaca history fetch failed: %s", e)
+
+        drawdown = min(0.0, equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
+        return {
+            "equity": equity,
+            "last_equity": last_equity,
+            "peak_equity": peak_equity,
+            "drawdown": drawdown,
+            "cash": float(acct.get("cash") or 0.0),
+            "buying_power": float(acct.get("buying_power") or 0.0),
+            "source": "alpaca",
+        }
+    except Exception as e:
+        logger.warning("_alpaca_account_state: %s", e)
+        return {"equity": INITIAL_CAPITAL, "drawdown": 0.0, "source": "initial_capital"}
+
+
+def _current_positions_from_alpaca() -> Dict[str, int]:
+    try:
+        import requests
+        base, headers = _alpaca_config()
+        if not headers:
+            return {}
+        resp = requests.get(f"{base}/v2/positions", headers=headers, timeout=10)
+        if resp.status_code != 200:
+            logger.error("Alpaca positions fetch failed: %s", resp.status_code)
+            return {}
+        return {p["symbol"]: int(float(p["qty"])) for p in resp.json()}
+    except Exception as e:
+        logger.error("Alpaca positions fetch failed: %s", e)
+        return {}
+
+
+def _latest_prices(symbols: List[str]) -> Dict[str, float]:
+    if not symbols:
+        return {}
+    try:
+        import yfinance as yf
+        prices_df = yf.download(symbols, period="1d", progress=False, auto_adjust=True)
+        if prices_df is None or prices_df.empty or "Close" not in prices_df.columns:
+            return {}
+        close = prices_df["Close"].iloc[-1]
+        if hasattr(close, "to_dict"):
+            return {k: float(v) for k, v in close.to_dict().items() if v and v > 0}
+        return {symbols[0]: float(close)}
+    except Exception as e:
+        logger.warning("latest price fetch failed: %s", e)
+        return {}
+
+
+def _build_delta_orders(target_weights: Dict[str, float], nav: float) -> List[dict]:
+    """Create a pre-trade order list without submitting anything."""
+    current = _current_positions_from_alpaca()
+    symbols = sorted(set(target_weights) | set(current))
+    prices = _latest_prices(symbols)
+    min_notional = max(0.0, V2_MIN_TRADE_NAV_PCT * nav)
+
+    orders: List[dict] = []
+    for sym in symbols:
+        price = float(prices.get(sym, 0.0) or 0.0)
+        if price <= 0:
+            continue
+        target_dollars = target_weights.get(sym, 0.0) * nav
+        target_qty = int(target_dollars / price)
+        current_qty = current.get(sym, 0)
+        delta = target_qty - current_qty
+        delta_notional = abs(delta * price)
+        if delta == 0 or delta_notional < min_notional:
+            continue
+        side = "buy" if delta > 0 else "sell"
+        orders.append({
+            "symbol": sym,
+            "side": side,
+            "qty": abs(delta),
+            "price": price,
+            "current": current_qty,
+            "target": target_qty,
+            "target_weight": target_weights.get(sym, 0.0),
+            "delta_notional": round(delta_notional, 2),
+            "status": "planned",
+        })
+    return orders
+
+
+def _print_delta_preview(orders: List[dict]) -> None:
+    if not orders:
+        print("  Pre-trade preview: no orders above threshold.")
+        return
+    gross = sum(float(o.get("delta_notional", 0.0)) for o in orders)
+    buys = sum(1 for o in orders if o.get("side") == "buy")
+    sells = sum(1 for o in orders if o.get("side") == "sell")
+    print(f"  Pre-trade preview: {len(orders)} orders ({buys} buys / {sells} sells), gross delta ${gross:,.0f}")
+    for o in orders[:15]:
+        print(
+            f"    {o['side'].upper()} {o['qty']} {o['symbol']} "
+            f"target={o['target']} current={o['current']} est=${o['delta_notional']:,.0f}"
+        )
+    if len(orders) > 15:
+        print(f"    ... and {len(orders) - 15} more")
+
+
+def _submit_delta_orders(planned_orders: List[dict]) -> List[dict]:
+    """Submit prebuilt delta orders to Alpaca."""
+    try:
+        import requests
+        base, headers = _alpaca_config()
+        if not headers:
+            logger.error("Alpaca credentials missing; cannot execute.")
+            return []
+
+        submitted = []
+        for order in planned_orders:
+            out = dict(order)
+            try:
+                resp = requests.post(
+                    f"{base}/v2/orders",
+                    headers=headers,
+                    json={
+                        "symbol": order["symbol"],
+                        "qty": order["qty"],
+                        "side": order["side"],
+                        "type": "market",
+                        "time_in_force": "day",
+                    },
+                    timeout=10,
+                )
+                out["status"] = resp.status_code
+                if resp.status_code >= 400:
+                    out["error"] = resp.text[:200]
+                else:
+                    out["alpaca_id"] = resp.json().get("id")
+            except Exception as e:
+                out["status"] = "exception"
+                out["error"] = str(e)[:200]
+            submitted.append(out)
+        return submitted
+    except Exception as e:
+        logger.error("_submit_delta_orders failed: %s", e)
+        return []
 
 
 def _current_drawdown_from_alpaca() -> float:
@@ -350,10 +625,10 @@ def main(argv=None):
         return 1
 
     scheduler = BlockingScheduler()
-    # NYSE hours: 9:30am-4:00pm ET, weekdays
+    # NYSE hours: first run 9:35am ET, then hourly through 3:35pm ET.
     scheduler.add_job(
         run_cycle, CronTrigger(
-            day_of_week="mon-fri", hour="9-15", minute="*/60",
+            day_of_week="mon-fri", hour="9-15", minute="35",
             timezone="America/New_York",
         ),
         kwargs={"dry_run": args.dry_run or KILL_SWITCH},

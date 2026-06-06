@@ -72,8 +72,17 @@ class Combiner:
     # (signed). At regime=-3 (full risk-off), equity sleeves shrink by 60%.
     MACRO_SHIFT_PER_UNIT = 0.20
 
-    def __init__(self, data_provider=None):
+    def __init__(
+        self,
+        data_provider=None,
+        max_sleeve_nav: Optional[float] = None,
+        max_total_invested: Optional[float] = None,
+    ):
         self.dp = data_provider or get_data_provider()
+        self.max_sleeve_nav = float(max_sleeve_nav if max_sleeve_nav is not None else self.MAX_SLEEVE_NAV)
+        self.max_total_invested = float(
+            max_total_invested if max_total_invested is not None else self.MAX_TOTAL_INVESTED
+        )
 
     # ── public API ──────────────────────────────────────────────────────────
 
@@ -222,17 +231,17 @@ class Combiner:
         return adjusted
 
     def _cap_and_normalize(self, sleeve_w: Dict[str, float]) -> Dict[str, float]:
-        """Cap each sleeve at MAX_SLEEVE_NAV; if total > MAX_TOTAL_INVESTED, scale down."""
+        """Cap each sleeve at configured limits; if total is too high, scale down."""
         # Apply per-sleeve cap (iterative water-filling)
         w = dict(sleeve_w)
         for _ in range(len(w)):
-            over = {k: v for k, v in w.items() if v > self.MAX_SLEEVE_NAV}
+            over = {k: v for k, v in w.items() if v > self.max_sleeve_nav}
             if not over:
                 break
-            excess = sum(v - self.MAX_SLEEVE_NAV for v in over.values())
+            excess = sum(v - self.max_sleeve_nav for v in over.values())
             for k in over:
-                w[k] = self.MAX_SLEEVE_NAV
-            under = [k for k, v in w.items() if v < self.MAX_SLEEVE_NAV and k not in over]
+                w[k] = self.max_sleeve_nav
+            under = [k for k, v in w.items() if v < self.max_sleeve_nav and k not in over]
             if not under:
                 break
             under_total = sum(w[k] for k in under)
@@ -243,7 +252,7 @@ class Combiner:
 
         # Cap total
         total = sum(w.values())
-        if total > self.MAX_TOTAL_INVESTED:
-            scale = self.MAX_TOTAL_INVESTED / total
+        if total > self.max_total_invested:
+            scale = self.max_total_invested / total
             w = {k: v * scale for k, v in w.items()}
         return w

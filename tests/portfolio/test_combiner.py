@@ -118,6 +118,21 @@ def test_combiner_sleeve_cap_enforced():
         assert w <= Combiner.MAX_SLEEVE_NAV + 1e-6, f"{k} = {w}"
 
 
+def test_combiner_runtime_rollout_caps():
+    """Runtime caps allow a staged rollout without changing global defaults."""
+    c = Combiner(
+        data_provider=_stub_dp(vols={"A": 0.20, "B": 0.20}),
+        max_sleeve_nav=0.325,
+        max_total_invested=0.65,
+    )
+    s1 = SleeveResult("xs_momentum", datetime.utcnow(), weights={"A": 1.0})
+    s2 = SleeveResult("value_quality_momentum", datetime.utcnow(), weights={"B": 1.0})
+    out = c.combine({"xs_momentum": s1, "value_quality_momentum": s2})
+    assert out.sleeve_weights["xs_momentum"] == pytest.approx(0.325)
+    assert out.sleeve_weights["value_quality_momentum"] == pytest.approx(0.325)
+    assert out.total_invested == pytest.approx(0.65)
+
+
 def test_combiner_macro_overlay_riskoff():
     """
     In risk-off, equity sleeves should shrink and defensive should grow.
@@ -217,6 +232,43 @@ def test_risk_officer_clean_pass():
     review = ro.review(tgt)
     assert review.violations == []
     assert sum(review.approved_weights.values()) == pytest.approx(0.16)
+
+
+def test_risk_officer_beta_cap_scales_down_high_beta_only():
+    tickers = {f"T{i}": 0.05 for i in range(6)}
+    ro = RiskOfficer(
+        data_provider=_stub_dp(
+            betas={t: 2.0 for t in tickers},
+            sectors={t: f"Sector{i}" for i, t in enumerate(tickers)},
+        ),
+        enforce_beta=True,
+        beta_max=0.5,
+    )
+    tgt = PortfolioTarget(
+        as_of=datetime.utcnow(),
+        ticker_weights=tickers,
+        sleeve_weights={"s": 0.30},
+    )
+    review = ro.review(tgt)
+    assert any("Beta cap" in v for v in review.violations)
+    assert sum(review.approved_weights.values()) < 0.30
+
+
+def test_risk_officer_beta_floor_does_not_increase_exposure():
+    ro = RiskOfficer(
+        data_provider=_stub_dp(betas={"A": 0.2}),
+        enforce_beta=True,
+        beta_min=0.4,
+        max_position_nav=0.20,
+    )
+    tgt = PortfolioTarget(
+        as_of=datetime.utcnow(),
+        ticker_weights={"A": 0.10},
+        sleeve_weights={"s": 0.10},
+    )
+    review = ro.review(tgt)
+    assert any("Portfolio beta" in v for v in review.violations)
+    assert review.approved_weights["A"] == pytest.approx(0.10)
 
 
 # ── End-to-end smoke test ───────────────────────────────────────────────────
