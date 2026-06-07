@@ -45,6 +45,10 @@ jobs:
 
       - name: Run pytest (fast suite)
         env:
+          # tests/* import `from src.backtest.reporting import ...` but the
+          # repo has no pytest.ini / pyproject.toml / conftest.py wiring up
+          # sys.path. Make the repo root importable for pytest collection.
+          PYTHONPATH: '.'
           # Keep CI hermetic: never hit live brokers or LLMs.
           ENABLE_MOCK_DATA: 'True'
           ALPACA_API_KEY: 'ci-dummy'
