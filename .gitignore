@@ -1,10 +1,57 @@
-.env
-.venv/
+# Python
 __pycache__/
-.pytest_cache/
 *.pyc
-alert_history.jsonl
-trading_history.jsonl
+*.pyo
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Databases / persistent state
 *.db
 *.sqlite
 *.sqlite3
+alert_history.jsonl
+trading_history.jsonl
+
+# Logs / run artifacts (do NOT commit raw log dumps)
+logs/
+run_log.txt
+run_log*.txt
+pytest_run.txt
+pytest_output.txt
+pytest_clean.txt
+pytest_*.log
+
+# Files accidentally created by pip when a version constraint is parsed as a redirect
+# (e.g. `pip install 'pkg>=0.2.36'` from an unquoted shell wrote `=0.2.36`).
+=*
+
+# Model artifacts
+# Tracked checkpoints live under model_registry/. Keep ad-hoc local zips out of git.
+/*.zip

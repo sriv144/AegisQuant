@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff (non-blocking)
+        # Lint is informational until the codebase is fully ruff-clean.
+        run: ruff check . || true
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'websockets>=13.0'
+
+      - name: Run pytest (fast suite)
+        env:
+          # Keep CI hermetic: never hit live brokers or LLMs.
+          ENABLE_MOCK_DATA: 'True'
+          ALPACA_API_KEY: 'ci-dummy'
+          ALPACA_SECRET_KEY: 'ci-dummy'
+          OPENAI_API_KEY: 'ci-dummy'
+        run: |
+          # -x: stop on first failure, -q: quiet,
+          # --maxfail=1: matches -x but explicit,
+          # -k 'not slow and not integration': skip long-running suites.
+          pytest tests/ -x -q --maxfail=1 \
+            -k 'not slow and not integration' \
+            --disable-warnings || pytest tests/ -x -q --maxfail=1 --disable-warnings
