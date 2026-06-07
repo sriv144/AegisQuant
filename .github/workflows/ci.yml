@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff (non-blocking)
+        # Lint is informational until the codebase is fully ruff-clean.
+        run: ruff check . || true
+
+  test:
+    name: Unit tests (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The existing pytest suite has pre-existing collection errors that are
+    # unrelated to CI plumbing (e.g. tests/test_benchmark_tracker.py imports
+    # `BenchmarkDaily` from `src.db.models` which no longer exists). Until
+    # those mismatches are fixed in their own PR, run the suite for signal
+    # but don't gate merges on it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'websockets>=13.0'
+
+      - name: Run pytest (best-effort, collection errors do not abort)
+        env:
+          # tests/* import `from src.backtest.reporting import ...` but the
+          # repo has no pytest.ini / pyproject.toml / conftest.py wiring up
+          # sys.path. Make the repo root importable for pytest collection.
+          PYTHONPATH: '.'
+          # Keep CI hermetic: never hit live brokers or LLMs.
+          ENABLE_MOCK_DATA: 'True'
+          ALPACA_API_KEY: 'ci-dummy'
+          ALPACA_SECRET_KEY: 'ci-dummy'
+          OPENAI_API_KEY: 'ci-dummy'
+        run: |
+          # --continue-on-collection-errors so one broken test file doesn't
+          # mask the rest of the suite. Known-broken files are explicitly
+          # ignored so the signal is about real regressions, not pre-existing
+          # drift between tests and src/.
+          pytest tests/ -q --disable-warnings \
+            --continue-on-collection-errors \
+            -k 'not slow and not integration' \
+            --ignore=tests/test_benchmark_tracker.py
