@@ -34,4 +34,5 @@ jobs:
       - name: Run pytest (tests/ only)
         env:
           ENABLE_MOCK_DATA: "True"
+          PYTHONPATH: "."
         run: pytest tests/ -q
