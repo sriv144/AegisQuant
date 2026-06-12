@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a defect in AegisQuant (backtest, RL training, live trade, dashboard, audit report)
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. **Do not paste live broker keys, account numbers, or position data.** Use `ENABLE_MOCK_DATA=True` to reproduce when possible.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface is affected?
+      options:
+        - Backtest (walk-forward / Monte Carlo)
+        - RL training (PPO / SAC env)
+        - Live trading daemon (main.py)
+        - Streamlit dashboard
+        - Audit report (reporting.py)
+        - HMM regime detection
+        - SHAP attribution
+        - Alpaca broker integration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the actual vs expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. `python src/backtest/walk_forward.py --algo PPO --mc-sims 10000`
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.8"
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11 / Ubuntu 22.04 / macOS 14"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      render: shell
