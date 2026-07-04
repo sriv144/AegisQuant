@@ -103,6 +103,7 @@ V2_ENFORCE_BETA = _env_bool("V2_ENFORCE_BETA", True)
 V2_MIN_TRADE_NAV_PCT = _env_float("V2_MIN_TRADE_NAV_PCT", 0.005)
 V2_LIVE_START_DATE = os.getenv("V2_LIVE_START_DATE", "2026-06-08")
 V2_REQUIRE_PRETRADE_REVIEW = _env_bool("V2_REQUIRE_PRETRADE_REVIEW", False)
+BENCHMARK_SYMBOL = os.getenv("BENCHMARK_SYMBOL", "SPY")
 
 ALL_SLEEVE_FACTORY = {
     "value_quality_momentum": ValueQualityMomentumSleeve,
@@ -154,6 +155,10 @@ def _resolve_dry_run(requested_dry_run: Optional[bool], now_utc: Optional[dateti
     if V2_REQUIRE_PRETRADE_REVIEW:
         return True, "V2_REQUIRE_PRETRADE_REVIEW"
     return False, "live_enabled"
+
+
+def _loop_cron_minute() -> str:
+    return "5,35"
 
 
 # ── Core cycle ──────────────────────────────────────────────────────────────
@@ -299,7 +304,30 @@ def run_cycle(dry_run: Optional[bool] = None) -> dict:
         "executed_deltas": deltas,
     }
     _write_snapshot(payload)
+    _record_cycle_audit(cycle_start, payload, planned_deltas, deltas)
     return payload
+
+
+def _record_cycle_audit(cycle_start: datetime, payload: dict, planned_deltas: List[dict], deltas: List[dict]) -> None:
+    try:
+        from src.engine.audit import audit_logger
+
+        action = "NO_TRADE" if not planned_deltas else ("PLAN_ONLY" if payload.get("dry_run") else "EXECUTE")
+        audit_logger.record_decision_cycle(
+            run_id=f"us-v2-{cycle_start.strftime('%Y%m%d-%H%M%S')}",
+            action=action,
+            benchmark_symbol=BENCHMARK_SYMBOL,
+            sleeve_weights=payload.get("combiner", {}).get("sleeve_weights", {}),
+            approved_weights=payload.get("risk_officer", {}).get("approved_weights", {}),
+            risk_violations=payload.get("risk_officer", {}).get("violations", []),
+            planned_orders=planned_deltas,
+            fills=[d for d in deltas if str(d.get("status", "")).startswith("2")],
+            rejected_orders=[d for d in deltas if str(d.get("status", "")).upper() == "REJECTED"],
+            portfolio_value=float(payload.get("nav_used") or 0.0),
+            notes=payload.get("dry_run_reason", ""),
+        )
+    except Exception as e:
+        logger.warning("decision cycle audit failed: %s", e)
 
 
 # ── Alpaca integration (read DD, execute) ───────────────────────────────────
@@ -625,10 +653,10 @@ def main(argv=None):
         return 1
 
     scheduler = BlockingScheduler()
-    # NYSE hours: first run 9:35am ET, then hourly through 3:35pm ET.
+    # NYSE hours: 30-minute paper-alpha decisions during regular session.
     scheduler.add_job(
         run_cycle, CronTrigger(
-            day_of_week="mon-fri", hour="9-15", minute="35",
+            day_of_week="mon-fri", hour="9-15", minute=_loop_cron_minute(),
             timezone="America/New_York",
         ),
         kwargs={"dry_run": args.dry_run or KILL_SWITCH},

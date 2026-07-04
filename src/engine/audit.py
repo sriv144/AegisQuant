@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from src.db.models import (
     AgentReasoning,
     Base,
+    DecisionCycle,
     MarketObservation,
     RLModelEvaluation,
 )
@@ -190,6 +191,55 @@ class AuditLogger:
             session.add(row)
             session.commit()
             return self._rl_to_dict(row)
+        finally:
+            session.close()
+
+    def record_decision_cycle(
+        self,
+        run_id: str,
+        action: str,
+        benchmark_symbol: str = "SPY",
+        sleeve_weights: Optional[Dict[str, float]] = None,
+        approved_weights: Optional[Dict[str, float]] = None,
+        risk_violations: Optional[List[str]] = None,
+        planned_orders: Optional[List[dict]] = None,
+        fills: Optional[List[dict]] = None,
+        rejected_orders: Optional[List[dict]] = None,
+        portfolio_value: float = 0.0,
+        excess_return_5d: float = 0.0,
+        notes: str = "",
+    ) -> dict:
+        planned_orders = planned_orders or []
+        fills = fills or []
+        rejected_orders = rejected_orders or []
+        row = DecisionCycle(
+            run_id=run_id,
+            timestamp=datetime.utcnow().isoformat(),
+            benchmark_symbol=benchmark_symbol,
+            action=action,
+            status="RECORDED",
+            sleeve_weights=_json(sleeve_weights or {}),
+            approved_weights=_json(approved_weights or {}),
+            risk_violations=_json(risk_violations or []),
+            planned_order_count=len(planned_orders),
+            filled_order_count=len(fills),
+            rejected_order_count=len(rejected_orders),
+            portfolio_value=float(portfolio_value or 0.0),
+            excess_return_5d=float(excess_return_5d or 0.0),
+            notes=notes,
+        )
+        session = self.Session()
+        try:
+            session.add(row)
+            session.commit()
+            return {
+                "run_id": row.run_id,
+                "action": row.action,
+                "benchmark_symbol": row.benchmark_symbol,
+                "planned_order_count": row.planned_order_count,
+                "filled_order_count": row.filled_order_count,
+                "rejected_order_count": row.rejected_order_count,
+            }
         finally:
             session.close()
 

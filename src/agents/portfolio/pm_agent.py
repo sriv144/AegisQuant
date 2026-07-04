@@ -59,13 +59,16 @@ class PMAgent(BaseAgent):
             try:
                 model = PPO.load(str(model_path))
                 obs_dim = model.observation_space.shape[0]
+                if obs_dim != 14:
+                    print(f"[{self.name}] Skipping legacy obs_dim={obs_dim} model at {model_path}")
+                    continue
                 self._obs_dim = obs_dim
                 print(f"[{self.name}] Loaded OK — obs_dim={obs_dim}")
                 return model
             except Exception:
                 pass
 
-            for obs_dim in (14, 6):
+            for obs_dim in (14,):
                 obs_space = Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
                 try:
                     model = PPO.load(
@@ -89,7 +92,7 @@ class PMAgent(BaseAgent):
         14-D: matches HistoricalHedgeFundEnv (walk-forward / curriculum models).
         6-D:  matches legacy HedgeFundEnv (random-noise models).
         """
-        obs_dim = getattr(self, "_obs_dim", 6)
+        obs_dim = getattr(self, "_obs_dim", 14)
         ti = state.get("technical_indicators", {})
         pf = state.get("portfolio_state", {})
         drawdown = pf.get("current_drawdown", 0.0)
@@ -104,7 +107,7 @@ class PMAgent(BaseAgent):
                 np.clip(ti.get("mom_12m_Z", 0.0), -1.0, 1.0),
                 0.0,  # current_weight — 0 for new position
                 np.clip(drawdown, 0.0, 1.0),
-                1.0, 0.0, 0.0, 0.0,  # regime one-hot default: Bull Quiet
+                0.0, 0.0, 1.0, 0.0,  # regime one-hot default: neutral
                 0.0,  # portfolio_return_5d
                 np.clip((vix_raw - 20.0) / 10.0, -1.0, 1.0),  # vix_z approx
                 0.0,  # yield_curve_slope

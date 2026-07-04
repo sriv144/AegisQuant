@@ -23,14 +23,20 @@ from src.db.models import Base, BenchmarkDaily, DailyPnL
 IST = ZoneInfo("Asia/Kolkata")
 
 
+def default_benchmark_symbol() -> str:
+    return os.getenv("BENCHMARK_SYMBOL") or ("SPY" if os.getenv("MARKET", "IN").upper() == "US" else "NIFTYBEES.NS")
+
+
 class BenchmarkTracker:
     """Fetch and persist daily benchmark close/return rows."""
 
     DEFAULT_SYMBOLS = ["NIFTYBEES.NS", "^NSEI", "BANKBEES.NS", "CASH", "EQUAL_WEIGHT"]
+    US_SYMBOLS = ["SPY", "^GSPC", "CASH", "EQUAL_WEIGHT"]
 
     def __init__(self, db_url: Optional[str] = None, symbols: Optional[List[str]] = None):
         self.db_url = db_url or os.getenv("POSTGRES_URL") or "sqlite:///aegisquant_live.db"
-        self.symbols = symbols or self.DEFAULT_SYMBOLS
+        self.symbols = symbols or (self.US_SYMBOLS if os.getenv("MARKET", "IN").upper() == "US" else self.DEFAULT_SYMBOLS)
+        self.primary_symbol = self.symbols[0] if symbols else default_benchmark_symbol()
         self.engine = create_engine(self.db_url)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
@@ -88,7 +94,7 @@ class BenchmarkTracker:
 
                 summary = PerformanceAttribution(
                     db_url=self.db_url,
-                    benchmark_symbol="NIFTYBEES.NS",
+                    benchmark_symbol=self.primary_symbol,
                 ).update_daily(date=date)
             except Exception as exc:
                 summary = {"error": str(exc)}
@@ -96,7 +102,8 @@ class BenchmarkTracker:
 
         return rows
 
-    def latest(self, symbol: str = "NIFTYBEES.NS") -> Optional[dict]:
+    def latest(self, symbol: Optional[str] = None) -> Optional[dict]:
+        symbol = symbol or self.primary_symbol
         session = self.Session()
         try:
             row = (
@@ -110,8 +117,8 @@ class BenchmarkTracker:
             session.close()
 
     def get_latest(self) -> dict:
-        """Return latest NIFTYBEES benchmark row plus performance summary."""
-        out = {"benchmark": self.latest("NIFTYBEES.NS") or {}}
+        """Return latest primary benchmark row plus performance summary."""
+        out = {"benchmark": self.latest(self.primary_symbol) or {}}
         try:
             from src.engine.performance_attribution import PerformanceAttribution
 
@@ -121,12 +128,12 @@ class BenchmarkTracker:
         return out
 
     def get_history(self, days: int = 90) -> list[dict]:
-        """Return recent NIFTYBEES benchmark rows."""
+        """Return recent primary benchmark rows."""
         session = self.Session()
         try:
             rows = (
                 session.query(BenchmarkDaily)
-                .filter(BenchmarkDaily.symbol == "NIFTYBEES.NS")
+                .filter(BenchmarkDaily.symbol == self.primary_symbol)
                 .order_by(BenchmarkDaily.date.desc(), BenchmarkDaily.id.desc())
                 .limit(int(days))
                 .all()

@@ -33,16 +33,31 @@ class PerformanceAttribution:
         self,
         db_url: Optional[str] = None,
         base_capital: float = 250_000.0,
-        benchmark_symbol: str = "NIFTYBEES.NS",
+        benchmark_symbol: Optional[str] = None,
         max_drawdown_limit: float = 0.15,
     ):
         self.db_url = db_url or os.getenv("POSTGRES_URL") or "sqlite:///aegisquant_live.db"
         self.base_capital = float(base_capital)
-        self.benchmark_symbol = benchmark_symbol
+        self.benchmark_symbol = benchmark_symbol or os.getenv("BENCHMARK_SYMBOL", "NIFTYBEES.NS")
         self.max_drawdown_limit = float(max_drawdown_limit)
         self.engine = create_engine(self.db_url)
         Base.metadata.create_all(self.engine)
+        self._run_migrations()
         self.Session = sessionmaker(bind=self.engine)
+
+    def _run_migrations(self) -> None:
+        from sqlalchemy import text as sql_text
+
+        for stmt in [
+            "ALTER TABLE performance_daily ADD COLUMN rolling_excess_5d FLOAT DEFAULT 0.0",
+            "ALTER TABLE performance_daily ADD COLUMN hit_rate_5d FLOAT DEFAULT 0.0",
+        ]:
+            try:
+                with self.engine.connect() as conn:
+                    conn.execute(sql_text(stmt))
+                    conn.commit()
+            except Exception:
+                pass
 
     def update_daily(self, date: Optional[str] = None) -> dict:
         """Recompute the full scoreboard and upsert today's performance row."""
@@ -87,6 +102,9 @@ class PerformanceAttribution:
             df["aegis_cumulative"] = (df["portfolio_value"] / first_value) - 1.0
             df["excess_return"] = df["aegis_return"] - df["benchmark_return"]
             df["hit"] = df["excess_return"] > 0
+            df["rolling_aegis_5d"] = df["aegis_return"].rolling(5, min_periods=1).sum()
+            df["rolling_excess_5d"] = df["excess_return"].rolling(5, min_periods=1).sum()
+            df["hit_rate_5d"] = df["hit"].rolling(5, min_periods=1).mean()
 
             df["rolling_sharpe_7"] = self._rolling_sharpe(df["aegis_return"], 7)
             df["rolling_sharpe_30"] = self._rolling_sharpe(df["aegis_return"], 30)
@@ -112,11 +130,20 @@ class PerformanceAttribution:
         finally:
             session.close()
 
-    def latest_summary(self) -> dict:
+    def latest_summary(self, as_of_date: Optional[str] = None) -> dict:
         session = self.Session()
         try:
             row = session.query(PerformanceDaily).order_by(PerformanceDaily.date.desc()).first()
-            return self._to_dict(row) if row else self._empty_summary()
+            summary = self._to_dict(row) if row else self._empty_summary()
+            if as_of_date and summary.get("date") and summary["date"] != as_of_date:
+                summary["is_stale"] = True
+                summary["readiness_status"] = "BLOCKED"
+                summary.setdefault("reasons", []).append(
+                    f"Latest performance row is stale: {summary['date']} < {as_of_date}."
+                )
+            else:
+                summary["is_stale"] = False
+            return summary
         finally:
             session.close()
 
@@ -148,6 +175,8 @@ class PerformanceAttribution:
             "max_drawdown": float(row_data["drawdown"]),
             "benchmark_drawdown": float(row_data["benchmark_drawdown"]),
             "hit_rate_30": float(row_data["hit_rate_30"]),
+            "rolling_excess_5d": float(row_data["rolling_excess_5d"]),
+            "hit_rate_5d": float(row_data["hit_rate_5d"]),
             "days_observed": int(days_observed),
             "verdict": verdict,
             "readiness_score": float(readiness_score),
@@ -178,11 +207,12 @@ class PerformanceAttribution:
         if cumulative_excess > 0:
             score += 20
         else:
-            reasons.append("Cumulative excess return vs NIFTYBEES is not positive.")
+            reasons.append(f"Cumulative excess return vs {self.benchmark_symbol} is not positive.")
 
         sharpe_ok = float(latest["rolling_sharpe_30"]) > float(latest["benchmark_sharpe_30"])
         drawdown_ok = float(latest["drawdown"]) < float(latest["benchmark_drawdown"])
-        if sharpe_ok or drawdown_ok:
+        weekly_excess_ok = float(latest.get("rolling_excess_5d", 0.0) or 0.0) > 0.0
+        if sharpe_ok or drawdown_ok or weekly_excess_ok:
             score += 20
         else:
             reasons.append("Risk-adjusted return has not beaten benchmark yet.")
@@ -191,6 +221,10 @@ class PerformanceAttribution:
             score += 20
         else:
             reasons.append(f"Drawdown exceeds {self.max_drawdown_limit:.0%} limit.")
+
+        weekly_loss_stop = float(os.getenv("WEEKLY_LOSS_STOP", "0.02") or 0.02)
+        if float(latest.get("rolling_aegis_5d", 0.0) or 0.0) <= -weekly_loss_stop:
+            reasons.append(f"Weekly loss stop breached at {weekly_loss_stop:.0%}.")
 
         recent_dq = (
             session.query(DataQualitySnapshot)
@@ -211,11 +245,17 @@ class PerformanceAttribution:
         if days < 30:
             return "INSUFFICIENT_DATA"
         excess = float(latest["aegis_cumulative"] - latest["benchmark_cumulative"])
+        suffix = self._verdict_suffix()
         if excess > 0:
-            return "BEATING_NIFTY"
+            return f"BEATING_{suffix}"
         if excess < -0.01:
-            return "LAGGING_NIFTY"
+            return f"LAGGING_{suffix}"
         return "ROUGHLY_IN_LINE"
+
+    def _verdict_suffix(self) -> str:
+        if self.benchmark_symbol == "NIFTYBEES.NS":
+            return "NIFTY"
+        return self.benchmark_symbol.replace(".", "_").replace("^", "").upper()
 
     @staticmethod
     def _rolling_sharpe(returns: pd.Series, window: int) -> pd.Series:
@@ -257,6 +297,8 @@ class PerformanceAttribution:
             "max_drawdown": float(row.max_drawdown or 0.0),
             "benchmark_drawdown": float(row.benchmark_drawdown or 0.0),
             "hit_rate_30": float(row.hit_rate_30 or 0.0),
+            "rolling_excess_5d": float(row.rolling_excess_5d or 0.0),
+            "hit_rate_5d": float(row.hit_rate_5d or 0.0),
             "days_observed": int(row.days_observed or 0),
             "verdict": row.verdict,
             "readiness_score": float(row.readiness_score or 0.0),
@@ -271,4 +313,5 @@ class PerformanceAttribution:
             "readiness_score": 0.0,
             "readiness_status": "BLOCKED",
             "reasons": ["No performance rows yet."],
+            "is_stale": False,
         }

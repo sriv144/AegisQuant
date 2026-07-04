@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 # ── JWT-like token management (lightweight, no external deps) ─────────────────
 # Set AEGIS_PASSWORD env var to enable auth; if unset, auth is disabled (dev mode)
 _AUTH_PASSWORD = os.getenv("AEGIS_PASSWORD", "")
+_API_KEY = os.getenv("AEGIS_API_KEY", "")
 _TOKEN_SECRET = os.getenv("AEGIS_TOKEN_SECRET", secrets.token_hex(32))
 _TOKEN_TTL_HOURS = 24
 _active_tokens: dict = {}  # token -> expiry datetime
@@ -82,6 +83,10 @@ def _verify_token(token: str) -> bool:
 
 async def require_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     """Dependency: enforces auth if AEGIS_PASSWORD is set, otherwise passes through."""
+    if _API_KEY:
+        if not credentials or credentials.credentials != _API_KEY:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+        return True
     if not _AUTH_PASSWORD:
         return True  # Auth disabled in dev mode
     if not credentials or not _verify_token(credentials.credentials):
@@ -98,13 +103,15 @@ STATIC_DIR = BASE_DIR / "static"
 DB_PATH = Path("aegisquant_live.db")
 
 _engine_cache = None
+_engine_cache_url = None
 
 
 def get_engine():
-    global _engine_cache
-    if _engine_cache is None:
-        db_url = os.getenv("POSTGRES_URL", f"sqlite:///{DB_PATH}")
+    global _engine_cache, _engine_cache_url
+    db_url = os.getenv("POSTGRES_URL", f"sqlite:///{DB_PATH}")
+    if _engine_cache is None or _engine_cache_url != db_url:
         _engine_cache = create_engine(db_url)
+        _engine_cache_url = db_url
     return _engine_cache
 
 
@@ -676,6 +683,114 @@ def get_decisions(_auth=Depends(require_auth)):
     except Exception as e:
         logger.error(f"get_decisions: {e}")
         return []
+
+
+@app.get("/api/performance")
+def get_performance(_auth=Depends(require_auth)):
+    """Latest benchmark truth layer row plus recent history."""
+    try:
+        engine = get_engine()
+        query = text("SELECT * FROM performance_daily ORDER BY date ASC LIMIT 365")
+        with engine.connect() as conn:
+            df = pd.read_sql(query, conn)
+        if df.empty:
+            return {"latest": {}, "history": []}
+        return {"latest": df.iloc[-1].to_dict(), "history": df.to_dict(orient="records")}
+    except Exception as e:
+        logger.error(f"get_performance: {e}")
+        return {"latest": {}, "history": [], "error": str(e)}
+
+
+@app.get("/api/watchlist")
+def get_watchlist(_auth=Depends(require_auth)):
+    """Group latest run reasoning into a small attention list."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            run_row = conn.execute(text(
+                "SELECT run_id FROM agent_reasoning WHERE run_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            )).fetchone()
+            if not run_row:
+                return []
+            rows = conn.execute(text(
+                "SELECT ticker, agent_name, action, confidence, rationale "
+                "FROM agent_reasoning WHERE run_id = :run_id ORDER BY id ASC"
+            ), {"run_id": run_row[0]}).mappings().all()
+
+        grouped = {}
+        for row in rows:
+            item = grouped.setdefault(row["ticker"], {
+                "ticker": row["ticker"],
+                "run_id": run_row[0],
+                "agent_count": 0,
+                "attention_score": 0.0,
+                "strongest_agent": "",
+                "beginner_reason": "",
+            })
+            item["agent_count"] += 1
+            conf = float(row["confidence"] or 0.0)
+            item["attention_score"] += conf
+            if conf >= float(item.get("_max_conf", -1)):
+                item["_max_conf"] = conf
+                item["strongest_agent"] = row["agent_name"]
+                item["beginner_reason"] = f"strongest agent view: {row['rationale']}"
+
+        out = []
+        for item in grouped.values():
+            item["attention_score"] = round(item["attention_score"] / max(1, item["agent_count"]), 4)
+            item.pop("_max_conf", None)
+            out.append(item)
+        return sorted(out, key=lambda x: -x["attention_score"])
+    except Exception as e:
+        logger.error(f"get_watchlist: {e}")
+        return []
+
+
+@app.get("/api/decision-detail/{run_id}")
+def get_decision_detail(run_id: str, _auth=Depends(require_auth)):
+    """Audit drill-down for one run."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            observations = conn.execute(text(
+                "SELECT * FROM market_observations WHERE run_id = :run_id ORDER BY id ASC"
+            ), {"run_id": run_id}).mappings().all()
+            reasoning = conn.execute(text(
+                "SELECT * FROM agent_reasoning WHERE run_id = :run_id ORDER BY id ASC"
+            ), {"run_id": run_id}).mappings().all()
+
+        tickers = sorted({row["ticker"] for row in reasoning})
+        return {
+            "run_id": run_id,
+            "observations": [dict(row) for row in observations],
+            "reasoning": [dict(row) for row in reasoning],
+            "beginner_explanation": {
+                "headline": f"{len(tickers)} ticker(s) reviewed by the agent team.",
+                "ticker_explanations": {
+                    ticker: f"Agent team recorded {sum(1 for r in reasoning if r['ticker'] == ticker)} view(s)."
+                    for ticker in tickers
+                },
+            },
+        }
+    except Exception as e:
+        logger.error(f"get_decision_detail: {e}")
+        return {"run_id": run_id, "observations": [], "reasoning": [], "error": str(e)}
+
+
+@app.get("/api/rl")
+def get_rl_lab(_auth=Depends(require_auth)):
+    """Recent RL/meta-allocation evaluations."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT * FROM rl_model_evaluations ORDER BY id DESC LIMIT 20"
+            )).mappings().all()
+        return {"evaluations": [dict(row) for row in rows]}
+    except Exception as e:
+        logger.error(f"get_rl_lab: {e}")
+        return {"evaluations": [], "error": str(e)}
 
 
 @app.get("/api/latest-run")

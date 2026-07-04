@@ -87,6 +87,195 @@ class UniverseSnapshot(Base):
     screen_criteria = Column(Text, nullable=True)  # JSON dict of filter criteria used
     created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
 
+
+class BenchmarkDaily(Base):
+    __tablename__ = "benchmark_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String, nullable=False)
+    symbol = Column(String, nullable=False)
+    close = Column(Float, default=0.0)
+    daily_return = Column(Float, default=0.0)
+    cumulative_return = Column(Float, default=0.0)
+    source = Column(String, default="")
+    fetch_status = Column(String, default="OK")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class PerformanceDaily(Base):
+    __tablename__ = "performance_daily"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String, unique=True, nullable=False)
+    portfolio_value = Column(Float, nullable=False)
+    benchmark_symbol = Column(String, nullable=False)
+    aegis_return = Column(Float, default=0.0)
+    benchmark_return = Column(Float, default=0.0)
+    excess_return = Column(Float, default=0.0)
+    cumulative_aegis_return = Column(Float, default=0.0)
+    cumulative_benchmark_return = Column(Float, default=0.0)
+    rolling_sharpe_7 = Column(Float, default=0.0)
+    rolling_sharpe_30 = Column(Float, default=0.0)
+    benchmark_sharpe_7 = Column(Float, default=0.0)
+    benchmark_sharpe_30 = Column(Float, default=0.0)
+    max_drawdown = Column(Float, default=0.0)
+    benchmark_drawdown = Column(Float, default=0.0)
+    hit_rate_30 = Column(Float, default=0.0)
+    rolling_excess_5d = Column(Float, default=0.0)
+    hit_rate_5d = Column(Float, default=0.0)
+    days_observed = Column(Integer, default=0)
+    verdict = Column(String, default="INSUFFICIENT_DATA")
+    readiness_score = Column(Float, default=0.0)
+    readiness_status = Column(String, default="BLOCKED")
+    reasons = Column(Text, default="[]")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class DataQualitySnapshot(Base):
+    __tablename__ = "data_quality_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String, nullable=False)
+    run_timestamp = Column(String, nullable=False)
+    missing_quote_count = Column(Integer, default=0)
+    stale_quote_count = Column(Integer, default=0)
+    news_failure_count = Column(Integer, default=0)
+    quote_disagreement_count = Column(Integer, default=0)
+    failed_symbols = Column(Text, default="[]")
+    score = Column(Float, default=0.0)
+    status = Column(String, default="UNKNOWN")
+    notes = Column(Text, default="")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class AgentReasoning(Base):
+    __tablename__ = "agent_reasoning"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=True)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    ticker = Column(String, nullable=False)
+    agent_name = Column(String, nullable=False)
+    action = Column(String, default="UNKNOWN")
+    confidence = Column(Float, default=0.0)
+    rationale = Column(Text, default="")
+    source_inputs = Column(Text, default="{}")
+    monitored_signals = Column(Text, default="[]")
+    disagreement = Column(String, default="NONE")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class MarketObservation(Base):
+    __tablename__ = "market_observations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=True)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    vix = Column(Float, default=0.0)
+    index_move = Column(Float, default=0.0)
+    sector_breadth = Column(Float, default=0.0)
+    universe_size = Column(Integer, default=0)
+    data_quality_status = Column(String, default="UNKNOWN")
+    notable_news = Column(Text, default="[]")
+    notes = Column(Text, default="")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class PaperOrder(Base):
+    __tablename__ = "paper_orders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String, unique=True, nullable=False)
+    run_id = Column(String, nullable=True)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    ticker = Column(String, nullable=False, default="")
+    side = Column(String, default="")
+    product_type = Column(String, default="")
+    order_type = Column(String, default="MARKET")
+    quantity = Column(Integer, default=0)
+    target_weight = Column(Float, default=0.0)
+    notional = Column(Float, default=0.0)
+    status = Column(String, default="PLANNED")
+    rejection_reason = Column(Text, default="")
+    strategy = Column(String, default="")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class PaperFill(Base):
+    __tablename__ = "paper_fills"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fill_id = Column(String, unique=True, nullable=False)
+    order_id = Column(String, nullable=False)
+    run_id = Column(String, nullable=True)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    ticker = Column(String, nullable=False, default="")
+    side = Column(String, default="")
+    product_type = Column(String, default="")
+    quantity = Column(Integer, default=0)
+    price = Column(Float, default=0.0)
+    slippage_bps = Column(Float, default=0.0)
+    fees = Column(Float, default=0.0)
+    fee_breakdown = Column(Text, default="{}")
+    status = Column(String, default="FILLED")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class RLModelEvaluation(Base):
+    __tablename__ = "rl_model_evaluations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=True)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    model_version = Column(String, default="unknown")
+    benchmark_symbol = Column(String, default="NIFTYBEES.NS")
+    reward = Column(Float, default=0.0)
+    turnover = Column(Float, default=0.0)
+    drawdown = Column(Float, default=0.0)
+    rolling_sharpe = Column(Float, default=0.0)
+    benchmark_return = Column(Float, default=0.0)
+    excess_return = Column(Float, default=0.0)
+    readiness_status = Column(String, default="BLOCKED")
+    improvement_note = Column(Text, default="")
+    degradation_note = Column(Text, default="")
+    promotion_eligible = Column(Integer, default=0)
+    metadata_json = Column(Text, default="{}")
+    created_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class CapitalAllocatorState(Base):
+    __tablename__ = "capital_allocator_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    as_of = Column(String, unique=True, nullable=False)
+    current_intraday_ratio = Column(Float, default=0.20)
+    rl_enabled = Column(Integer, default=0)
+    weeks_of_data = Column(Integer, default=0)
+    performance_history = Column(Text, default="[]")
+    updated_at = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+
+
+class DecisionCycle(Base):
+    __tablename__ = "decision_cycles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, unique=True, nullable=False)
+    timestamp = Column(String, nullable=False, default=lambda: datetime.utcnow().isoformat())
+    benchmark_symbol = Column(String, default="SPY")
+    action = Column(String, default="NO_TRADE")
+    status = Column(String, default="RECORDED")
+    sleeve_weights = Column(Text, default="{}")
+    approved_weights = Column(Text, default="{}")
+    risk_violations = Column(Text, default="[]")
+    planned_order_count = Column(Integer, default=0)
+    filled_order_count = Column(Integer, default=0)
+    rejected_order_count = Column(Integer, default=0)
+    portfolio_value = Column(Float, default=0.0)
+    excess_return_5d = Column(Float, default=0.0)
+    notes = Column(Text, default="")
+
 class DatabaseSessionManager:
     """
     Manages connections to SQLite (dev) or PostgreSQL (production).
