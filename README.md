@@ -1,5 +1,13 @@
 # AegisQuant
 
+![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)
+![Reinforcement Learning](https://img.shields.io/badge/RL-PPO%20%7C%20SAC-purple)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit-red?logo=streamlit&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-pytest-orange?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+> **Reinforcement-learning portfolio manager with HMM regime detection, SHAP attribution, and live Alpaca execution — built for honest, auditable backtests.**
+
 AegisQuant is a production-grade, multi-asset algorithmic trading pipeline utilizing Reinforcement Learning (PPO/SAC) combined with Large Language Model consensus scoring to actively generate systematic alpha.
 
 The system structurally bridges the gap between pure ML research and financial deployment by embedding institutional risk-management techniques (Continuous Feature Normalization, Gaussian HMM Regime Detection, SHAP Agent Attribution, Drawdown Circuit Breakers, and Implementation Shortfall tracking).

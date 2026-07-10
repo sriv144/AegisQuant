@@ -10,3 +10,17 @@ trading_history.jsonl
 *.db
 *.sqlite
 *.sqlite3
+
+# Stray pip-install-output artifacts (e.g. files named =0.2.36 from misquoted `pip install pkg==0.2.36`)
+=*
+
+# Generated logs and test artifacts checked-in by mistake
+run_log.txt
+pytest_clean.txt
+pytest_output.txt
+pytest_run.txt
+pcr.txt
+*.jsonl
+
+# Trained model bundles belong in model_registry/, not the repo root
+/ppo_*.zip
