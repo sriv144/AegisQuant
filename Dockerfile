@@ -9,7 +9,11 @@ WORKDIR /app
 
 # Install only the reviewed Python 3.11 lockfile (cached layer).
 COPY requirements.lock .
+# The base image's build-only wheel package requires packaging>=24, while
+# legacy Streamlit legitimately pins packaging<24. Wheel is not needed by
+# the final runtime after dependency installation.
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.lock \
+    && pip uninstall --yes wheel \
     && pip check
 
 # Copy source
