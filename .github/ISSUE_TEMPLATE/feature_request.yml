@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a new capability for AegisQuant
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface would this extend?
+      options:
+        - Backtester
+        - RL environment / reward shaping
+        - Risk gates (drawdown, regime, position sizing)
+        - SHAP / explainability
+        - Live trading
+        - Streamlit dashboard
+        - Audit / reporting
+        - New asset class or broker
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who benefits?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
