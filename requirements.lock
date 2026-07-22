@@ -61,7 +61,7 @@ distro==1.9.0
     # via openai
 farama-notifications==0.0.6
     # via gymnasium
-fastapi==0.109.2
+fastapi==0.115.14
     # via -r requirements.txt
 filelock==3.31.0
     # via torch
@@ -89,6 +89,7 @@ httpcore==1.0.9
     # via httpx
 httpx==0.28.1
     # via
+    #   -r requirements.txt
     #   langsmith
     #   openai
 idna==3.18
@@ -317,7 +318,7 @@ sseclient-py==1.9.0
     # via alpaca-py
 stable-baselines3==2.9.0
     # via -r requirements.txt
-starlette==0.36.3
+starlette==0.46.2
     # via fastapi
 statsmodels==0.14.6
     # via -r requirements.txt
