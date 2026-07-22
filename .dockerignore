@@ -7,7 +7,15 @@ __pycache__
 .pytest_cache
 .mypy_cache
 logs/
+data/
+artifacts/
+models/
+.agents/
 *.log
+*.jsonl
+*.db
+*.sqlite
+*.sqlite3
 aegisquant.db
 aegisquant_live.db
 node_modules/

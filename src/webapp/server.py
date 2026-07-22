@@ -33,7 +33,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPExcept
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect as sqlalchemy_inspect, text
 import pandas as pd
 
 # ── Market configuration ────────────────────────────────────────────────────
@@ -94,6 +94,19 @@ async def require_auth(credentials: Optional[HTTPAuthorizationCredentials] = Dep
     return True
 
 
+async def require_v3_auth(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+):
+    """Never expose durable portfolio/order truth with dev-mode open auth."""
+
+    if not _API_KEY and not _AUTH_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="v3 dashboard authentication is not configured",
+        )
+    return await require_auth(credentials)
+
+
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="AegisQuant Web UI")
 
@@ -108,7 +121,11 @@ _engine_cache_url = None
 
 def get_engine():
     global _engine_cache, _engine_cache_url
-    db_url = os.getenv("POSTGRES_URL", f"sqlite:///{DB_PATH}")
+    db_url = (
+        os.getenv("DATABASE_URL")
+        or os.getenv("POSTGRES_URL")
+        or f"sqlite:///{DB_PATH}"
+    )
     if _engine_cache is None or _engine_cache_url != db_url:
         _engine_cache = create_engine(db_url)
         _engine_cache_url = db_url
@@ -983,17 +1000,397 @@ def get_circuits(_auth=Depends(require_auth)):
         return {"circuits": [], "total": 0, "error": str(e)}
 
 
+# ---- AegisQuant v3 durable execution API ---------------------------------
+
+_V3_DASHBOARD_TABLES = {
+    "execution_runs",
+    "order_intents",
+    "order_events",
+    "portfolio_snapshots",
+    "position_snapshots",
+    "benchmark_marks",
+}
+
+
+def _v3_tables_ready(engine) -> bool:
+    return _V3_DASHBOARD_TABLES <= set(sqlalchemy_inspect(engine).get_table_names())
+
+
+def _mapping(row):
+    return None if row is None else dict(row._mapping)
+
+
+def _v3_scope(account_key: Optional[str], mode: str) -> tuple[str, str]:
+    resolved_account = (account_key or os.getenv("AEGISQUANT_ACCOUNT_KEY", "")).strip()
+    resolved_mode = mode.strip().lower()
+    if not resolved_account or len(resolved_account) > 128:
+        raise HTTPException(status_code=400, detail="account_key is required")
+    if resolved_mode not in {"shadow", "paper"}:
+        raise HTTPException(status_code=400, detail="mode must be shadow or paper")
+    return resolved_account, resolved_mode
+
+
+@app.get("/api/v3/execution/status")
+def get_v3_execution_status(
+    account_key: Optional[str] = None,
+    mode: str = "shadow",
+    _auth=Depends(require_v3_auth),
+):
+    """Latest durable run, reconciliation state and SPY-relative NAV."""
+
+    try:
+        account_key, mode = _v3_scope(account_key, mode)
+        engine = get_engine()
+        if not _v3_tables_ready(engine):
+            return {
+                "available": False,
+                "message": "v3 schema is not installed; run alembic upgrade head",
+            }
+        with engine.connect() as conn:
+            latest = _mapping(
+                conn.execute(
+                    text(
+                        """
+                        SELECT run_id, strategy_id, strategy_version, mode, purpose,
+                               decision_key, commit_sha, target_hash, status, failure_reason,
+                               metadata_json,
+                               started_at, completed_at
+                        FROM execution_runs
+                        WHERE account_key = :account_key AND mode = :mode
+                        ORDER BY started_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"account_key": account_key, "mode": mode},
+                ).first()
+            )
+            unresolved = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM order_intents oi
+                    JOIN execution_runs er ON er.run_id = oi.run_id
+                    WHERE er.account_key = :account_key AND er.mode = :mode
+                      AND COALESCE(
+                        (
+                            SELECT oe.state
+                            FROM order_events oe
+                            WHERE oe.client_order_id = oi.client_order_id
+                            ORDER BY oe.observed_at DESC, oe.record_id DESC
+                            LIMIT 1
+                        ),
+                        'intent'
+                    ) NOT IN ('filled', 'rejected', 'canceled', 'expired')
+                    """
+                ),
+                {"account_key": account_key, "mode": mode},
+            ).scalar_one()
+            reconciliation_at = conn.execute(
+                text(
+                    """
+                    SELECT MAX(oe.observed_at)
+                    FROM order_events oe
+                    JOIN order_intents oi ON oi.client_order_id = oe.client_order_id
+                    JOIN execution_runs er ON er.run_id = oi.run_id
+                    WHERE er.account_key = :account_key AND er.mode = :mode
+                    """
+                ),
+                {"account_key": account_key, "mode": mode},
+            ).scalar_one_or_none()
+            portfolio = _mapping(
+                conn.execute(
+                    text(
+                        """
+                        SELECT snapshot_id, session_date, mode, nav, cash,
+                               invested_weight, peak_nav, drawdown, beta,
+                               tracking_error, cumulative_return,
+                               cumulative_benchmark_return,
+                               cumulative_excess_return
+                        FROM portfolio_snapshots
+                        WHERE account_key = :account_key AND mode = :mode
+                        ORDER BY observed_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"account_key": account_key, "mode": mode},
+                ).first()
+            )
+            benchmark = _mapping(
+                conn.execute(
+                    text(
+                        """
+                        SELECT session_date, symbol, total_return_level,
+                               daily_total_return, observed_at
+                        FROM benchmark_marks
+                        WHERE account_key = :account_key AND mode = :mode
+                        ORDER BY session_date DESC, observed_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"account_key": account_key, "mode": mode},
+                ).first()
+            )
+            promotion = None
+            if latest is not None:
+                raw_metadata = latest.get("metadata_json") or {}
+                if isinstance(raw_metadata, str):
+                    try:
+                        raw_metadata = json.loads(raw_metadata)
+                    except json.JSONDecodeError:
+                        raw_metadata = {}
+                plan_metadata = (
+                    raw_metadata.get("plan_metadata", {})
+                    if isinstance(raw_metadata, dict)
+                    else {}
+                )
+                config_sha = plan_metadata.get("config_sha256")
+                data_sha = plan_metadata.get("research_data_sha256")
+                if config_sha and data_sha and latest.get("commit_sha"):
+                    promotion = _mapping(
+                        conn.execute(
+                            text(
+                                """
+                                SELECT promotion_status, gate_failures_json, attempted_at,
+                                       config_sha256, data_manifest_sha256, commit_sha
+                                FROM experiment_runs
+                                WHERE strategy_id = :strategy_id
+                                  AND strategy_version = :strategy_version
+                                  AND config_sha256 = :config_sha
+                                  AND data_manifest_sha256 = :data_sha
+                                  AND commit_sha = :commit_sha
+                                  AND split_name = 'final_holdout'
+                                ORDER BY attempted_at DESC
+                                LIMIT 1
+                                """
+                            ),
+                            {
+                                "strategy_id": latest["strategy_id"],
+                                "strategy_version": latest["strategy_version"],
+                                "config_sha": config_sha,
+                                "data_sha": data_sha,
+                                "commit_sha": latest["commit_sha"],
+                            },
+                        ).first()
+                    )
+        return {
+            "available": True,
+            "latest_run": latest,
+            "nonterminal_order_count": int(unresolved or 0),
+            "last_reconciliation_at": reconciliation_at,
+            "portfolio": portfolio,
+            "benchmark": benchmark,
+            "account_key": account_key,
+            "mode": mode,
+            "promotion": promotion,
+            "gate_failure": (
+                latest.get("failure_reason")
+                if latest and latest.get("status") in {"blocked", "failed"}
+                else None
+            ),
+        }
+    except Exception as exc:
+        logger.error("get_v3_execution_status: %s", exc)
+        return {"available": False, "error": "v3 status read failed"}
+
+
+@app.get("/api/v3/execution/runs/{run_id}")
+def get_v3_execution_run(run_id: str, _auth=Depends(require_v3_auth)):
+    """Auditable run details with frozen intents and append-only events."""
+
+    try:
+        engine = get_engine()
+        if not _v3_tables_ready(engine):
+            raise HTTPException(status_code=503, detail="v3 schema is not installed")
+        with engine.connect() as conn:
+            run = _mapping(
+                conn.execute(
+                    text(
+                        """
+                        SELECT run_id, strategy_id, strategy_version, mode, purpose,
+                               decision_key, trigger, commit_sha, target_hash, status,
+                               failure_reason, metadata_json, started_at, completed_at
+                        FROM execution_runs WHERE run_id = :run_id
+                        """
+                    ),
+                    {"run_id": run_id},
+                ).first()
+            )
+            if run is None:
+                raise HTTPException(status_code=404, detail="execution run not found")
+            intents = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT client_order_id, sleeve, symbol, side,
+                               requested_quantity, requested_notional, target_weight,
+                               arrival_bid, arrival_ask, arrival_quote_at, created_at
+                        FROM order_intents
+                        WHERE run_id = :run_id
+                        ORDER BY side DESC, symbol
+                        """
+                    ),
+                    {"run_id": run_id},
+                )
+            ]
+            events = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT oe.event_id, oe.client_order_id, oe.broker_order_id,
+                               oe.state, oe.observed_at, oe.filled_quantity,
+                               oe.filled_average_price, oe.slippage_bps, oe.reason
+                        FROM order_events oe
+                        JOIN order_intents oi
+                          ON oi.client_order_id = oe.client_order_id
+                        WHERE oi.run_id = :run_id
+                        ORDER BY oe.observed_at, oe.record_id
+                        """
+                    ),
+                    {"run_id": run_id},
+                )
+            ]
+        return {"run": run, "order_intents": intents, "order_events": events}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("get_v3_execution_run: %s", exc)
+        raise HTTPException(status_code=503, detail="v3 run read failed") from exc
+
+
+@app.get("/api/v3/execution/nonterminal-orders")
+def get_v3_nonterminal_orders(
+    account_key: Optional[str] = None,
+    mode: str = "shadow",
+    _auth=Depends(require_v3_auth),
+):
+    """Orders whose latest broker observation is not terminal."""
+
+    try:
+        account_key, mode = _v3_scope(account_key, mode)
+        engine = get_engine()
+        if not _v3_tables_ready(engine):
+            return {"available": False, "orders": []}
+        with engine.connect() as conn:
+            orders = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT oi.run_id, oi.client_order_id, oi.symbol, oi.side,
+                               COALESCE(
+                                   (
+                                       SELECT oe.state
+                                       FROM order_events oe
+                                       WHERE oe.client_order_id = oi.client_order_id
+                                       ORDER BY oe.observed_at DESC, oe.record_id DESC
+                                       LIMIT 1
+                                   ),
+                                   'intent'
+                               ) AS state,
+                               (
+                                   SELECT MAX(oe.observed_at)
+                                   FROM order_events oe
+                                   WHERE oe.client_order_id = oi.client_order_id
+                               ) AS last_observed_at
+                        FROM order_intents oi
+                        JOIN execution_runs er ON er.run_id = oi.run_id
+                        WHERE er.account_key = :account_key
+                          AND er.mode = :mode
+                          AND COALESCE(
+                            (
+                                SELECT oe.state
+                                FROM order_events oe
+                                WHERE oe.client_order_id = oi.client_order_id
+                                ORDER BY oe.observed_at DESC, oe.record_id DESC
+                                LIMIT 1
+                            ),
+                            'intent'
+                        ) NOT IN ('filled', 'rejected', 'canceled', 'expired')
+                        ORDER BY oi.created_at
+                        """
+                    ),
+                    {"account_key": account_key, "mode": mode},
+                )
+            ]
+        return {
+            "available": True,
+            "account_key": account_key,
+            "mode": mode,
+            "orders": orders,
+            "count": len(orders),
+        }
+    except Exception as exc:
+        logger.error("get_v3_nonterminal_orders: %s", exc)
+        return {"available": False, "orders": [], "error": "v3 order read failed"}
+
+
+@app.get("/api/v3/performance")
+def get_v3_performance(
+    account_key: Optional[str] = None,
+    mode: str = "shadow",
+    _auth=Depends(require_v3_auth),
+):
+    """Durable NY-session NAV and total-return SPY comparison."""
+
+    try:
+        account_key, mode = _v3_scope(account_key, mode)
+        engine = get_engine()
+        if not _v3_tables_ready(engine):
+            return {"available": False, "series": []}
+        with engine.connect() as conn:
+            rows = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT p.account_key, p.epoch_id, p.session_date, p.mode,
+                               p.nav, p.cash, p.drawdown,
+                               p.beta, p.tracking_error, p.cumulative_return,
+                               p.cumulative_benchmark_return,
+                               p.cumulative_excess_return,
+                               b.total_return_level AS spy_total_return_level,
+                               b.daily_total_return AS spy_daily_total_return
+                        FROM portfolio_snapshots p
+                        LEFT JOIN benchmark_marks b
+                          ON b.account_key = p.account_key
+                         AND b.mode = p.mode
+                         AND b.session_date = p.session_date
+                         AND b.symbol = 'SPY'
+                        WHERE p.account_key = :account_key AND p.mode = :mode
+                        ORDER BY p.session_date, p.observed_at
+                        """
+                    ),
+                    {"account_key": account_key, "mode": mode},
+                )
+            ]
+        return {
+            "available": bool(rows),
+            "benchmark": "SPY",
+            "account_key": account_key,
+            "mode": mode,
+            "series": rows,
+            "missing_benchmark_rows": sum(
+                row["spy_total_return_level"] is None for row in rows
+            ),
+        }
+    except Exception as exc:
+        logger.error("get_v3_performance: %s", exc)
+        return {"available": False, "series": [], "error": "v3 performance read failed"}
+
+
 # ── Sleeves API (v2 architecture) ───────────────────────────────────────────
 @app.get("/api/sleeves")
 def get_sleeves(_auth=Depends(require_auth)):
     """
-    Return the latest sleeve-based pipeline snapshot. Written by main_us_v2.py
+    Return the legacy JSON snapshot fallback for one compatibility release.
     on each cycle. Returns {"available": false} if v2 has never run.
     """
     try:
         snap_path = Path(__file__).resolve().parents[2] / ".cache" / "sleeve_snapshots" / "latest.json"
         if not snap_path.exists():
-            return {"available": False, "message": "v2 pipeline has not run yet. Execute: python main_us_v2.py"}
+            return {"available": False, "message": "Legacy v2 snapshots are retired; use the v3 execution APIs."}
         with open(snap_path) as f:
             data = json.load(f)
         data["available"] = True
@@ -1057,4 +1454,9 @@ if STATIC_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("src.webapp.server:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(
+        "src.webapp.server:app",
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+        reload=False,
+    )

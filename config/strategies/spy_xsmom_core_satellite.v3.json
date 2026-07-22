@@ -1,0 +1,46 @@
+{
+  "strategy_id": "spy_xsmom_core_satellite",
+  "version": "3.0.0",
+  "benchmark": "SPY",
+  "allocation": {
+    "core_weight": 0.69,
+    "satellite_weight": 0.30,
+    "cash_weight": 0.01
+  },
+  "momentum": {
+    "lookback_sessions": 252,
+    "skip_sessions": 21,
+    "target_holdings": 30,
+    "entry_percentile": 0.10,
+    "retention_percentile": 0.20,
+    "momentum_weight": 0.50,
+    "smoothness_weight": 0.50
+  },
+  "risk": {
+    "max_direct_issuer_weight": 0.02,
+    "min_beta": 0.90,
+    "max_beta": 1.10,
+    "tracking_error_target_min": 0.03,
+    "tracking_error_target_max": 0.06,
+    "tracking_error_hard_max": 0.06,
+    "active_sector_target_max": 0.03,
+    "active_sector_hard_max": 0.05,
+    "satellite_step_down": 0.05,
+    "minimum_price_coverage": 0.98,
+    "risk_estimation_sessions": 126,
+    "warning_drawdown": 0.10,
+    "de_risk_drawdown": 0.15
+  },
+  "research": {
+    "base_cost_bps_one_way": 5.0,
+    "stress_cost_bps_one_way": 15.0,
+    "embargo_sessions": 21,
+    "discovery": ["2005-01-01", "2014-12-31"],
+    "validation": ["2015-01-01", "2019-12-31"],
+    "holdout": ["2020-01-01", "2026-06-30"]
+  },
+  "features": {
+    "rl_enabled": false,
+    "disabled_sleeves": ["value_quality_momentum", "pead", "insider", "macro_timing"]
+  }
+}

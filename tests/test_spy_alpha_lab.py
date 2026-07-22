@@ -105,10 +105,11 @@ def test_decision_cycle_records_no_trade(tmp_path):
         session.close()
 
 
-def test_us_v2_loop_uses_thirty_minute_cadence():
+def test_us_v2_loop_is_retired():
     import main_us_v2
 
-    assert main_us_v2._loop_cron_minute() == "5,35"
+    assert not hasattr(main_us_v2, "_loop_cron_minute")
+    assert not hasattr(main_us_v2, "run_cycle")
 
 
 def test_meta_allocator_caps_sleeves_and_keeps_cash():

@@ -1,36 +1,52 @@
-version: "3.9"
-
 services:
-  trader:
+  # Explicit opt-in only:
+  #   docker compose --profile manual-shadow run --rm manual-shadow
+  # This service has no broker credentials and cannot enable execution.
+  manual-shadow:
+    profiles: [manual-shadow]
     build: .
-    container_name: aegisquant-trader
-    command: python main_us.py
-    env_file: .env
+    command:
+      - python
+      - main_us_v3.py
+      - --mode
+      - shadow
+      - --purpose
+      - rebalance
+    environment:
+      TRADING_MODE: shadow
+      RUN_PURPOSE: rebalance
+      EXECUTION_ENABLED: "false"
+      PAPER_EXECUTION_ENABLED: "false"
+      ENABLE_BROKER_EXECUTION: "false"
+      KILL_SWITCH: "true"
+      RL_ENABLED: "false"
+      BENCHMARK_SYMBOL: SPY
+      V3_RUNTIME_INPUT: /app/data/v3_runtime_input.json
+      DATABASE_URL: ${AEGISQUANT_DATABASE_URL:-sqlite:////app/data/aegisquant_v3.db}
+      POSTGRES_URL: ${AEGISQUANT_DATABASE_URL:-sqlite:////app/data/aegisquant_v3.db}
     volumes:
-      - ./aegisquant_live.db:/app/aegisquant_live.db
-      - ./models:/app/models
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
       - ./logs:/app/logs
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
+    restart: "no"
 
   dashboard:
     build: .
     container_name: aegisquant-dashboard
-    command: python -m src.webapp.server --host 0.0.0.0 --port 8000
-    env_file: .env
+    command: uvicorn src.webapp.server:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: ${AEGISQUANT_DATABASE_URL:-sqlite:////app/data/aegisquant_v3.db}
+      POSTGRES_URL: ${AEGISQUANT_DATABASE_URL:-sqlite:////app/data/aegisquant_v3.db}
+      AEGIS_API_KEY: ${AEGIS_API_KEY:-}
+      AEGIS_PASSWORD: ${AEGIS_PASSWORD:-}
+      AEGISQUANT_ACCOUNT_KEY: ${AEGISQUANT_ACCOUNT_KEY:-}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./aegisquant_live.db:/app/aegisquant_live.db
-    depends_on:
-      - trader
+      - ./data:/app/data
     restart: unless-stopped
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
+        max-size: 10m
         max-file: "5"

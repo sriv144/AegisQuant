@@ -1,0 +1,20 @@
+# Safety-critical workflow and v3 runtime surfaces require explicit review.
+/.github/CODEOWNERS @sriv144
+/.github/workflows/ @sriv144
+/Dockerfile @sriv144
+/.dockerignore @sriv144
+/docker-compose.yml @sriv144
+/requirements.txt @sriv144
+/requirements.lock @sriv144
+/main.py @sriv144
+/main_us.py @sriv144
+/main_us_v2.py @sriv144
+/main_us_v3.py @sriv144
+/scripts/fetch_v3_runtime_input.py @sriv144
+/scripts/start_v2_loop.ps1 @sriv144
+/src/db/v3_* @sriv144
+/src/v3/ @sriv144
+/src/execution/ @sriv144
+/src/execution/v3/ @sriv144
+/config/strategies/ @sriv144
+/alembic/ @sriv144

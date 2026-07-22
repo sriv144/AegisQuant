@@ -8,6 +8,7 @@ matplotlib==3.8.2
 pandas==2.2.0
 numpy==1.26.4
 SQLAlchemy==2.0.25
+alembic==1.13.1
 psycopg2-binary==2.9.9
 redis==5.0.1
 slack-sdk==3.27.1

@@ -1,70 +1,66 @@
-# AegisQuant
+# AegisQuant v3
 
-AegisQuant is a production-grade, multi-asset algorithmic trading pipeline utilizing Reinforcement Learning (PPO/SAC) combined with Large Language Model consensus scoring to actively generate systematic alpha.
+AegisQuant v3 is a benchmark-aware, long-only research and Alpaca paper-trading
+system. Its champion strategy is a 69% SPY core, 30% point-in-time
+cross-sectional-momentum satellite, and 1% operational cash.
 
-The system structurally bridges the gap between pure ML research and financial deployment by embedding institutional risk-management techniques (Continuous Feature Normalization, Gaussian HMM Regime Detection, SHAP Agent Attribution, Drawdown Circuit Breakers, and Implementation Shortfall tracking).
+The supported runtime is deliberately narrow:
 
-## Core Architecture
-- **Phase 0–1**: Synchronous multi-asset `yfinance` pipelines computing Z-score normalized volatility curves, fed into a Monte Carlo bootstrap walk-forward testing engine.
-- **Phase 2–3**: Continuous `[-1.0, 1.0]` Gym environments optimizing portfolios natively against turnover friction and covariance/correlation penalties.
-- **Phase 4**: Alpaca Broker wrappers transmuting AI weights into discrete integer lot orders execution tracking.
-- **Phase 5**: Deep Streamlit UI projecting continuous SHAP permutations mapping exactly *why* the AI generated its signals.
-- **Phase 6**: SQLAlchemy audit trails and active SLACK/SMTP alerting loops.
+- `shadow` is the default and cannot submit broker orders.
+- `paper` requires protected, explicit enablement and the exact Alpaca paper endpoint.
+- There is no `live` CLI mode or live workflow.
+- PPO/RL, VQM, PEAD, insider, macro-timing, shorts, leverage, and options do not
+  affect v3 targets.
+- Legacy `main.py`, `main_us.py`, and `main_us_v2.py` commands are disabled shims.
 
-## Installation
+## Safe local start
+
+Install the reviewed Python 3.11 lockfile and run a read-only health probe:
 
 ```bash
-# 1. Clone & Enter Directory
-cd AegisQuant
-
-# 2. Install core library requirements
-pip install -r requirements.txt
-# (Includes stable-baselines3, gymnasium, shap, alpaca-py, streamlit, hmmlearn)
-
-# 3. Secure Env Vars
-cp .env.example .env
-# Edit .env and supply your Alpaca or Anthropic keys.
+python -m pip install -r requirements.lock
+python main_us_v3.py --mode shadow --purpose health
 ```
 
-## Running the Matrix
+Bootstrap a local shadow database, then run a one-shot shadow rebalance with a
+frozen input bundle:
 
-### 0. Backtest Audit Report
-To turn an existing walk-forward JSON artifact into an honest Markdown + JSON audit report:
 ```bash
-python -m src.backtest.reporting --input backtest_results/walk_forward_multi_SPY_QQQ_TLT_GLD.json
+set DATABASE_URL=sqlite:///data/aegisquant_v3.db
+python main_us_v3.py --mode shadow --purpose bootstrap
+python main_us_v3.py --mode shadow --purpose rebalance --input-bundle data/v3_runtime_input.json
 ```
-This writes:
-- `backtest_results/audit_multi_SPY_QQQ_TLT_GLD_report.md`
-- `backtest_results/audit_multi_SPY_QQQ_TLT_GLD_summary.json`
 
-The audit report is deliberately transparent. If the RL strategy fails against benchmarks or risk gates, the report says so plainly instead of presenting AegisQuant as a profitable trading bot.
+The equivalent Docker path is opt-in and one-shot:
 
-### 1. The Walk-Forward Backtester
-To train the PPO model from scratch across chronological cross-fold validations mapping 10 years of OHLCV:
 ```bash
-python src/backtest/walk_forward.py --algo PPO --mc-sims 10000
+docker compose --profile manual-shadow run --rm manual-shadow
 ```
-*Outputs will dump `model.zip` into `model_registry/` while generating exact `shap_feature_importance.json` traces.*
 
-### 2. The Command Center (UI)
-Streamlit hosts the Phase 5 interactive metrics:
+## Safety and promotion
+
+Paper execution requires durable PostgreSQL, fresh successful broker reads, a
+database lease, no unresolved orders, promotable point-in-time data, exact
+config/data/commit-bound research evidence, a valid market window, the kill
+switch off, and explicit execution enablement. A failed gate is a block; it
+never falls back to shadow.
+
+Every run writes a complete redacted audit bundle below `artifacts/<run_id>/`.
+PostgreSQL remains the source of truth.
+
+See [the v3 operations and verification runbook](docs/aegisquant-v3-runbook.md)
+for protected-environment setup, frozen-data requirements, rollout gates, and
+how to measure SPY-relative improvement.
+
+## Tests
+
+Run the same broker-POST guard used by CI:
+
 ```bash
-streamlit run src/ui/dashboard.py
-```
-*Visualizes live paper-trading PnL, Regime shifts, and SHAP Global Feature Attributions.*
-
-### 3. The Live Trading Daemon
-Launch the APScheduler heartbeat. Armed with `.env` keys, it will automatically extract live states, run inference, and punch trades natively via Alpaca at exactly **09:35 AM ET** every weekday:
-```bash
-python main.py
-```
-*To force immediate execution off schedule, run `python main.py --now`.*
-
-## System Testing
-The codebase is mapped heavily against `pytest`. Execute safety verifications before pushing model states up to Staging/Production:
-```bash
-python -m pytest tests/
+set RUN_NETWORK_TESTS=0
+set PYTHONPATH=tests
+python -m pytest -p v3_workflow.no_network_order_post
 ```
 
-## Authors
-_Built originally to merge Modern Portfolio Theory with Autonomous AI frameworks._
+Research results are not a guarantee of future returns. Paper fills, market
+gaps, data defects, and regime changes can materially change realized results.

@@ -4,7 +4,9 @@ __pycache__/
 .pytest_cache/
 .cache/
 .claude/
+.agents/
 *.pyc
+artifacts/
 alert_history.jsonl
 trading_history.jsonl
 *.db

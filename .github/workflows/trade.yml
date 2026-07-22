@@ -1,61 +1,287 @@
-name: AegisQuant US Trading Cycle
+name: AegisQuant US v3 Trading Cycle
 
 on:
-  # PRIMARY TRIGGER: cron-job.org calls this via GitHub API every 20 min
-  # POST https://api.github.com/repos/sriv144/AegisQuant/dispatches
-  # body: {"event_type": "trade_cycle"}
+  # cron-job.org sends purpose/mode in client_payload. An omitted payload is a
+  # read-only shadow health probe.
   repository_dispatch:
     types: [trade_cycle]
 
-  # BACKUP: GitHub's built-in schedule (unreliable, kept as fallback only)
+  # DST-paired probes. The application clock/calendar decides which probe is
+  # valid for the New York session and whether a monthly rebalance is due.
   schedule:
-    - cron: "*/30 13-19 * * 1-5"   # every 30 min, 13-19 UTC (rough US hours)
+    - cron: "17 14,15 * * 1-5"
+    - cron: "47 20,21 * * 1-5"
 
-  # Manual trigger from GitHub Actions UI
   workflow_dispatch:
+    inputs:
+      purpose:
+        description: Purpose of this one-shot run
+        required: true
+        type: choice
+        default: health
+        options:
+          - health
+          - eod
+          - rebalance
+          - reconcile
+          - bootstrap
+      mode:
+        description: Broker execution is available only in protected paper runs
+        required: true
+        type: choice
+        default: shadow
+        options:
+          - shadow
+          - paper
+      force_recompute:
+        description: Recompute inputs; never bypasses safety or idempotency gates
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aegisquant-us-v3-paper
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  trade:
-    name: US Trading Cycle
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  classify:
+    name: Classify trigger
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      purpose: ${{ steps.trigger.outputs.purpose }}
+      mode: ${{ steps.trigger.outputs.mode }}
+      force_recompute: ${{ steps.trigger.outputs.force_recompute }}
+      environment: ${{ steps.trigger.outputs.environment }}
+      execution_enabled: ${{ steps.trigger.outputs.execution_enabled }}
+    steps:
+      - name: Resolve and validate trigger
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
+          REPOSITORY_PURPOSE: ${{ github.event.client_payload.purpose || 'health' }}
+          REPOSITORY_MODE: ${{ github.event.client_payload.mode || 'shadow' }}
+          MANUAL_PURPOSE: ${{ inputs.purpose || 'health' }}
+          MANUAL_MODE: ${{ inputs.mode || 'shadow' }}
+          MANUAL_FORCE_RECOMPUTE: ${{ inputs.force_recompute || 'false' }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
 
+          event = os.environ["EVENT_NAME"]
+          if event == "workflow_dispatch":
+              purpose = os.environ["MANUAL_PURPOSE"]
+              mode = os.environ["MANUAL_MODE"]
+              force_recompute = os.environ["MANUAL_FORCE_RECOMPUTE"].lower()
+          elif event == "repository_dispatch":
+              purpose = os.environ["REPOSITORY_PURPOSE"]
+              mode = os.environ["REPOSITORY_MODE"]
+              force_recompute = "false"
+          elif event == "schedule":
+              schedule = os.environ["EVENT_SCHEDULE"]
+              purpose = "rebalance" if schedule.startswith("17 ") else "eod"
+              mode = "shadow"
+              force_recompute = "false"
+          else:
+              raise SystemExit(f"unsupported trigger: {event}")
+
+          allowed_purposes = {"health", "eod", "rebalance", "reconcile", "bootstrap"}
+          allowed_modes = {"shadow", "paper"}
+          if purpose not in allowed_purposes:
+              raise SystemExit(f"invalid purpose: {purpose}")
+          if mode not in allowed_modes:
+              raise SystemExit(f"invalid mode: {mode}")
+          if force_recompute not in {"true", "false"}:
+              raise SystemExit("force_recompute must be true or false")
+
+          # Automatic paper is deliberately disabled. Only a protected manual
+          # rebalance/reconcile can receive an enabled execution flag.
+          execution_enabled = str(
+              event == "workflow_dispatch"
+              and mode == "paper"
+              and purpose in {"rebalance", "reconcile"}
+          ).lower()
+          environment = (
+              "alpaca-paper-execution" if mode == "paper"
+              else "alpaca-paper-shadow"
+          )
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as stream:
+              stream.write(f"purpose={purpose}\n")
+              stream.write(f"mode={mode}\n")
+              stream.write(f"force_recompute={force_recompute}\n")
+              stream.write(f"environment={environment}\n")
+              stream.write(f"execution_enabled={execution_enabled}\n")
+          PY
+
+  run:
+    name: ${{ needs.classify.outputs.mode }} / ${{ needs.classify.outputs.purpose }}
+    needs: classify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: ${{ needs.classify.outputs.environment }}
     env:
       MARKET: US
       BROKER: alpaca
-      INITIAL_CAPITAL: "100000"
-      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-      ALPACA_BASE_URL: https://paper-api.alpaca.markets
-      ENABLE_MOCK_DATA: "False"
+      STRATEGY_ID: spy_xsmom_core_satellite
+      STRATEGY_VERSION: 3.0.0
       BENCHMARK_SYMBOL: SPY
-      POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
+      RL_ENABLED: "false"
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      AEGISQUANT_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
+          cache-dependency-path: requirements.lock
 
-      - name: Install dependencies
+      - name: Install locked dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install "websockets>=13.0"
+          python -m pip install --disable-pip-version-check -r requirements.lock
+          python -m pip check
 
-      - name: Run one trading cycle
-        run: python main_us_v2.py --dry-run
+      - name: Assert Alpaca paper endpoint
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit
 
-      - name: Upload logs
+          expected = "https://paper-api.alpaca.markets"
+          actual = os.environ["ALPACA_BASE_URL"].rstrip("/")
+          parsed = urlsplit(actual)
+          if actual != expected or parsed.scheme != "https" or parsed.hostname != "paper-api.alpaca.markets":
+              raise SystemExit("blocked: exact Alpaca paper endpoint is required")
+          PY
+
+      # This database connectivity gate runs before the only step that receives
+      # broker credentials, so malformed or unavailable paper storage cannot
+      # lead to a broker call.
+      - name: Validate durable PostgreSQL for paper
+        if: needs.classify.outputs.mode == 'paper'
+        env:
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+        run: |
+          python - <<'PY'
+          import ipaddress
+          import os
+          from urllib.parse import urlsplit
+
+          from sqlalchemy import create_engine, text
+
+          url = os.environ.get("POSTGRES_URL", "")
+          parsed = urlsplit(url)
+          allowed_schemes = {
+              "postgres",
+              "postgresql",
+              "postgresql+psycopg",
+              "postgresql+psycopg2",
+          }
+          if parsed.scheme not in allowed_schemes or not parsed.hostname:
+              raise SystemExit("blocked: paper mode requires durable PostgreSQL")
+          hostname = parsed.hostname.lower()
+          if hostname == "localhost" or hostname.endswith(".localhost"):
+              raise SystemExit("blocked: local PostgreSQL is not durable CI storage")
+          try:
+              address = ipaddress.ip_address(hostname)
+          except ValueError:
+              address = None
+          if address is not None and (address.is_loopback or address.is_unspecified):
+              raise SystemExit("blocked: loopback PostgreSQL is not durable CI storage")
+
+          engine = create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 10})
+          try:
+              with engine.connect() as connection:
+                  connection.execute(text("SELECT 1"))
+          finally:
+              engine.dispose()
+          PY
+
+      - name: Run one AegisQuant v3 cycle
+        env:
+          ALPACA_API_KEY: ${{ needs.classify.outputs.mode == 'paper' && secrets.ALPACA_API_KEY || '' }}
+          ALPACA_SECRET_KEY: ${{ needs.classify.outputs.mode == 'paper' && secrets.ALPACA_SECRET_KEY || '' }}
+          # The value is a one-way account fingerprint, shared so shadow starts
+          # from the audited Alpaca bootstrap epoch rather than a new identity.
+          AEGISQUANT_ACCOUNT_KEY: ${{ secrets.AEGISQUANT_ACCOUNT_KEY }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
+          DATABASE_URL: ${{ secrets.POSTGRES_URL }}
+          V3_INPUT_BUNDLE_URL: ${{ secrets.V3_INPUT_BUNDLE_URL }}
+          V3_INPUT_BUNDLE_SHA256: ${{ secrets.V3_INPUT_BUNDLE_SHA256 }}
+          TRADING_MODE: ${{ needs.classify.outputs.mode }}
+          RUN_PURPOSE: ${{ needs.classify.outputs.purpose }}
+          EXECUTION_ENABLED: ${{ needs.classify.outputs.execution_enabled }}
+          PAPER_EXECUTION_ENABLED: ${{ needs.classify.outputs.execution_enabled }}
+          ENABLE_BROKER_EXECUTION: ${{ needs.classify.outputs.execution_enabled }}
+          KILL_SWITCH: ${{ vars.AEGISQUANT_KILL_SWITCH || 'true' }}
+          FORCE_RECOMPUTE: ${{ needs.classify.outputs.force_recompute }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          runtime_input=""
+          if [[ "$RUN_PURPOSE" == "rebalance" || "$RUN_PURPOSE" == "eod" || ( "$RUN_PURPOSE" == "bootstrap" && "$TRADING_MODE" == "paper" ) ]]; then
+            if [[ -n "$V3_INPUT_BUNDLE_URL" && -n "$V3_INPUT_BUNDLE_SHA256" ]]; then
+              runtime_input="${RUNNER_TEMP}/v3-runtime-input.json"
+              if ! python scripts/fetch_v3_runtime_input.py \
+                --url "$V3_INPUT_BUNDLE_URL" \
+                --sha256 "$V3_INPUT_BUNDLE_SHA256" \
+                --output "$runtime_input"; then
+                # Let v3 persist a BLOCKED artifact even when retrieval fails.
+                runtime_input="${RUNNER_TEMP}/v3-runtime-input-fetch-failed.json"
+              fi
+            fi
+          fi
+          export V3_RUNTIME_INPUT="$runtime_input"
+          args=(
+            --mode "$TRADING_MODE"
+            --purpose "$RUN_PURPOSE"
+          )
+          if [[ "$FORCE_RECOMPUTE" == "true" ]]; then
+            args+=(--force-recompute)
+          fi
+          python main_us_v3.py "${args[@]}"
+
+      - name: Require complete audit artifact set
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          artifact_dir="artifacts/${AEGISQUANT_RUN_ID}"
+          required=(
+            manifest.json
+            preflight.json
+            targets.json
+            orders.json
+            reconciliation.json
+            performance.json
+            run.log
+          )
+          for filename in "${required[@]}"; do
+            test -s "${artifact_dir}/${filename}" || {
+              echo "missing required artifact: ${artifact_dir}/${filename}" >&2
+              exit 1
+            }
+          done
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: trade-log-${{ github.run_number }}
-          path: logs/
-          retention-days: 7
-          if-no-files-found: ignore
+          name: aegisquant-${{ needs.classify.outputs.mode }}-${{ env.AEGISQUANT_RUN_ID }}
+          path: artifacts/${{ env.AEGISQUANT_RUN_ID }}/
+          if-no-files-found: error
+          retention-days: ${{ needs.classify.outputs.mode == 'paper' && 90 || 30 }}

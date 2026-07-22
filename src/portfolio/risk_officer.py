@@ -58,7 +58,7 @@ class RiskOfficer:
     MAX_SLEEVE_NAV = 0.40
 
     # Drawdown gate
-    DRAWDOWN_GATE_THRESHOLD = 0.15      # at -15% DD
+    DRAWDOWN_GATE_THRESHOLD = 0.15      # positive magnitude: 0.15 = 15% DD
     DRAWDOWN_GATE_SCALING = 0.50        # halve sizes
 
     # Beta range (informational only — beta is hard to estimate cleanly at
@@ -111,12 +111,12 @@ class RiskOfficer:
 
         # 1) Drawdown gate
         dd_scale = 1.0
-        if current_drawdown <= -self.DRAWDOWN_GATE_THRESHOLD:
+        if current_drawdown >= self.DRAWDOWN_GATE_THRESHOLD:
             dd_scale = self.DRAWDOWN_GATE_SCALING
             weights = {t: w * dd_scale for t, w in weights.items()}
             violations.append(
                 f"Drawdown gate: current_dd={current_drawdown*100:.1f}% "
-                f"<= -{self.DRAWDOWN_GATE_THRESHOLD*100:.1f}% -> scaling by {dd_scale}"
+                f">= {self.DRAWDOWN_GATE_THRESHOLD*100:.1f}% -> scaling by {dd_scale}"
             )
 
         # 2) Sleeve cap (sanity — combiner should have enforced)

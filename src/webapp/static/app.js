@@ -932,7 +932,7 @@ async function renderSleevesPage() {
     if (!data.available) {
         statusEl.textContent = data.message || 'v2 pipeline has not run yet.';
         cycleEl.textContent = '--';
-        overviewEl.innerHTML = '<div class="muted" style="font-size:12px;padding:8px">Run <code>python main_us_v2.py</code> to populate this page.</div>';
+        overviewEl.innerHTML = '<div class="muted" style="font-size:12px;padding:8px">Legacy v2 snapshots are retired. Use the v3 execution status view.</div>';
         macroEl.innerHTML = '<div class="muted">No data</div>';
         sleevesEl.innerHTML = '<div class="muted" style="padding:14px;font-size:12px">No data</div>';
         riskEl.innerHTML = '<div class="muted" style="padding:14px;font-size:12px">No data</div>';

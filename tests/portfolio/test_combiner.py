@@ -202,7 +202,7 @@ def test_risk_officer_drawdown_gate():
         ticker_weights={"A": 0.04, "B": 0.04},
         sleeve_weights={"s": 0.10},
     )
-    review = ro.review(tgt, current_drawdown=-0.20)
+    review = ro.review(tgt, current_drawdown=0.20)
     assert review.drawdown_scaling == 0.5
     assert review.approved_weights["A"] == pytest.approx(0.02)
     assert any("Drawdown gate" in v for v in review.violations)
@@ -215,7 +215,7 @@ def test_risk_officer_drawdown_no_gate():
         ticker_weights={"A": 0.04, "B": 0.04},
         sleeve_weights={"s": 0.10},
     )
-    review = ro.review(tgt, current_drawdown=-0.05)  # only -5%, no gate
+    review = ro.review(tgt, current_drawdown=0.05)  # only 5%, no gate
     assert review.drawdown_scaling == 1.0
     assert review.approved_weights["A"] == 0.04
 
@@ -322,7 +322,7 @@ def test_e2e_sleeves_to_combiner_to_riskofficer():
     )
 
     officer = RiskOfficer()
-    review = officer.review(target, current_drawdown=-0.046)  # current Alpaca DD
+    review = officer.review(target, current_drawdown=0.046)  # current Alpaca DD magnitude
 
     print(f"\n=== E2E ===")
     print(f"Macro regime: {macro.score:+.2f} (conf {macro.confidence:.2f})")

@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Python deps first (cached layer)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir "websockets>=13.0" "alpaca-trade-api>=3.0.0"
+# Install only the reviewed Python 3.11 lockfile (cached layer).
+COPY requirements.lock .
+RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.lock \
+    && pip check
 
 # Copy source
 COPY . .
@@ -24,5 +24,5 @@ USER aegis
 
 EXPOSE 8000
 
-# Default: dashboard. Override CMD for the trader daemon.
-CMD ["python", "-m", "src.webapp.server", "--host", "0.0.0.0", "--port", "8000"]
+# The image has no default trading process.
+CMD ["python", "-m", "src.webapp.server"]

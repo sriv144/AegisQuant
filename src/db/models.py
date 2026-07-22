@@ -7,9 +7,9 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any
 
-from sqlalchemy import Column, Integer, String, Float, Text, create_engine, DateTime
+from sqlalchemy import Column, Integer, String, Float, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from src import config  # noqa: F401
@@ -296,7 +296,7 @@ class DatabaseSessionManager:
                 "pool_recycle": 1800,  # Recycle connections every 30 min
                 "pool_pre_ping": True,  # Verify connections before use
             }
-            logger.info(f"[DB] PostgreSQL mode with connection pooling (pool_size=5)")
+            logger.info("[DB] PostgreSQL mode with connection pooling (pool_size=5)")
         else:
             # SQLite: no pooling, check_same_thread for multi-thread safety
             engine_kwargs = {
